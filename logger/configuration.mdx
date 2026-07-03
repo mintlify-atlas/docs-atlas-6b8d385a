@@ -1,0 +1,229 @@
+---
+title: "Configure the GoKit Logger"
+sidebarTitle: "Configuration"
+description: "Customize GoKit's logger with log levels, color output, custom writers, and a service name. Use InitGlobal to set the global logger once at startup."
+---
+
+GoKit's logger is zero-config by default — the global instance starts with `InfoLevel` and colored console output the moment you first call any logging function. When you need more control, the `Config` struct and a handful of package-level functions let you set a custom minimum level, swap in different writers, attach a service name to every entry, and safely initialise (or replace) the global logger from your application's startup code.
+
+## The `Config` struct
+
+Every logger instance is created from a `Config` value. All fields are optional; sensible defaults are applied for anything you leave blank.
+
+<ParamField body="MinLevel" type="logger.Level" default="InfoLevel">
+  The minimum severity level an entry must have to be written. Entries below this level are silently dropped. Use `logger.DebugLevel` during development and `logger.WarnLevel` or higher in production.
+</ParamField>
+
+<ParamField body="EnableColors" type="bool" default="false">
+  When `true`, the built-in `ConsoleWriter` wraps each line in an ANSI color corresponding to its level. Has no effect on `FileWriter` or `DBWriter`.
+</ParamField>
+
+<ParamField body="Writers" type="[]logger.Writer" default="[ConsoleWriter(EnableColors)]">
+  The list of output targets that receive every log entry. If you leave this `nil`, GoKit automatically creates a single `ConsoleWriter` using the value of `EnableColors`. Provide your own slice to write to files, databases, or any custom destination simultaneously.
+</ParamField>
+
+<ParamField body="ServiceName" type="string" default='""'>
+  A free-form string attached to every entry as a `"service"` field. Helpful when several microservices write to the same log sink and you need to filter by origin.
+</ParamField>
+
+## Creating a logger
+
+### `logger.New(cfg Config) *Logger`
+
+`New` creates a fresh, independent logger instance. Use it when you need a logger with different settings from the global — for example, a component-scoped logger or a logger created specifically for tests.
+
+```go
+log := logger.New(logger.Config{
+    MinLevel:     logger.DebugLevel,
+    EnableColors: true,
+    ServiceName:  "payments-service",
+})
+
+log.Info("Logger initialised")
+```
+
+If `cfg.Writers` is `nil`, `New` automatically adds a `ConsoleWriter` that respects `cfg.EnableColors`.
+
+### `logger.InitGlobal(cfg Config) *Logger`
+
+`InitGlobal` initialises the global logger exactly once, no matter how many goroutines call it concurrently. Subsequent calls are no-ops and return the already-initialised instance. Call it early in `main()` before spawning any goroutines that might log.
+
+```go
+func main() {
+    log := logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+    })
+    defer log.Close()
+
+    // All logger.Info / logger.Error / … calls now use this instance.
+    logger.Info("Application starting")
+}
+```
+
+<Note>
+Because `InitGlobal` is backed by a `sync.Once`, it is safe to call from multiple goroutines at startup — only the first call takes effect.
+</Note>
+
+## Managing the global logger
+
+| Function | Description |
+|---|---|
+| `logger.Default() *Logger` | Returns the current global logger (lazily created if not yet initialised). |
+| `logger.SetDefault(l *Logger)` | Replaces the global logger. Subsequent package-level calls (`logger.Info`, etc.) use the new instance. |
+| `logger.InitGlobal(cfg Config) *Logger` | Initialises the global logger once; returns it. |
+
+```go
+// Replace the global logger at runtime (e.g. after loading config from env)
+customLogger := logger.New(logger.Config{
+    MinLevel:     logger.WarnLevel,
+    EnableColors: false,
+})
+logger.SetDefault(customLogger)
+```
+
+## Instance methods
+
+These methods operate on a specific `*Logger` and are safe to call concurrently.
+
+### `(*Logger).SetMinLevel(level Level)`
+
+Adjusts the minimum log level on an existing logger without creating a new instance. Useful for toggling verbosity at runtime based on an environment variable or an admin endpoint.
+
+```go
+if os.Getenv("VERBOSE") == "true" {
+    log.SetMinLevel(logger.DebugLevel)
+}
+```
+
+### `(*Logger).AddWriter(w Writer)`
+
+Appends a new writer to an existing logger. Entries will immediately begin flowing to the new destination.
+
+```go
+fileWriter, err := logger.NewFileWriter("audit.log")
+if err != nil {
+    log.Fatal("could not open audit log: %v", err)
+}
+log.AddWriter(fileWriter)
+```
+
+### `(*Logger).Close() error`
+
+Flushes and closes all writers attached to the logger. Always call `Close` (or `defer log.Close()`) before your process exits to ensure queued entries — especially in `DBWriter` — are fully flushed.
+
+```go
+log := logger.New(cfg)
+defer log.Close()
+```
+
+### `(*Logger).Clone() *Logger`
+
+Returns a deep copy of the logger sharing the same writers slice and context fields. The clone and the original are independent — changes to one do not affect the other.
+
+```go
+requestLog := log.Clone()
+requestLog.SetMinLevel(logger.DebugLevel)
+```
+
+## Configuration examples
+
+<CodeGroup>
+```go Simple colored console logger
+log := logger.New(logger.Config{
+    MinLevel:     logger.DebugLevel,
+    EnableColors: true,
+})
+```
+
+```go Warn-and-above with a service name
+log := logger.New(logger.Config{
+    MinLevel:    logger.WarnLevel,
+    ServiceName: "billing-worker",
+})
+```
+
+```go Console + JSON file
+fileWriter, err := logger.NewFileWriter("logs/app.log")
+if err != nil {
+    panic(err)
+}
+
+log := logger.New(logger.Config{
+    MinLevel: logger.InfoLevel,
+    Writers: []logger.Writer{
+        logger.NewConsoleWriter(true),
+        fileWriter,
+    },
+})
+defer log.Close()
+```
+
+```go InitGlobal at application startup
+func main() {
+    fileWriter, err := logger.NewFileWriter("logs/app.log")
+    if err != nil {
+        panic(err)
+    }
+
+    logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+        Writers: []logger.Writer{
+            logger.NewConsoleWriter(true),
+            fileWriter,
+        },
+    })
+    defer logger.Default().Close()
+
+    // From here, all global calls share this configuration.
+    logger.Info("Server initialised")
+    startServer()
+}
+```
+</CodeGroup>
+
+## Environment-based configuration
+
+A common pattern is to select a configuration based on the `APP_ENV` environment variable:
+
+```go
+func setupLogger() *logger.Logger {
+    env := os.Getenv("APP_ENV")
+
+    if env == "production" {
+        fileWriter, _ := logger.NewFileWriter("logs/app.log")
+        return logger.New(logger.Config{
+            MinLevel:     logger.WarnLevel,
+            EnableColors: false,
+            ServiceName:  "my-api",
+            Writers: []logger.Writer{
+                logger.NewConsoleWriter(false),
+                fileWriter,
+            },
+        })
+    }
+
+    // development / test
+    return logger.New(logger.Config{
+        MinLevel:     logger.DebugLevel,
+        EnableColors: true,
+    })
+}
+```
+
+## Testing with a silent logger
+
+Set `MinLevel` to `OffLevel` to suppress all output during unit tests:
+
+```go
+func TestMyFunction(t *testing.T) {
+    silent := logger.New(logger.Config{MinLevel: logger.OffLevel})
+    logger.SetDefault(silent)
+
+    // Call code that logs — nothing will be printed.
+    myFunction()
+}
+```

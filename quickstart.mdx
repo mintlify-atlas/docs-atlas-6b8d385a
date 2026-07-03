@@ -1,47 +1,211 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with GoKit in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Build a secure Gin API with JWT authentication, structured logging, CORS, and panic recovery using GoKit. From install to running server in under 50 lines."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through building a working Gin API that uses every major GoKit package: JWT token generation and validation, structured request logging, CORS headers, and panic recovery. The complete `main.go` at the bottom is ready to compile and run.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+<Step title="Install GoKit">
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Add GoKit to your module with `go get`:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
+```bash
+go get github.com/AndresGT/GoKit
+```
+
+Make sure you are running **Go 1.25 or later** and that your project already has a `go.mod` file. See the [Installation guide](/installation) for details.
+
+</Step>
+
+<Step title="Configure JWT">
+
+Call `jwt.Configure` once at the very start of your `main` function — before any token is generated or validated. Pass a `jwt.Config` struct with at least the `Secret` field set.
+
+```go
+jwt.Configure(jwt.Config{
+    Secret:              "my-super-secret-key-at-least-32ch!!",
+    AccessTokenDuration: 24 * time.Hour,
+    Issuer:              "my-api",
+})
+```
+
+<Note>
+  `jwt.Configure` **panics** if `Secret` is empty or shorter than 32 characters. This is intentional — a weak secret is a misconfiguration, not a runtime error. `RefreshTokenDuration` defaults to 7 days and `Issuer` defaults to `"gokit"` if omitted.
+</Note>
+
+</Step>
+
+<Step title="Initialise the global logger">
+
+`logger.InitGlobal` configures the package-level logger that all `logger.Info(...)`, `logger.Error(...)`, and other top-level calls route through. It is safe to call from multiple goroutines — only the first call takes effect.
+
+```go
+logger.InitGlobal(logger.Config{
+    MinLevel:     logger.InfoLevel,
+    EnableColors: true,
+    ServiceName:  "my-api",
+})
+```
+
+`ServiceName` is attached as a structured field to every log entry, making it easy to filter logs in aggregators. `EnableColors` enables ANSI colour output — turn this off in production or when writing to a log file.
+
+</Step>
+
+<Step title="Create the router and attach middlewares">
+
+Use `gin.New()` (not `gin.Default()`) so you control every middleware explicitly. Attach the GoKit middlewares in this order:
+
+```go
+router := gin.New()
+router.Use(middleware.DefaultRequestID())  // 1. assign X-Request-ID
+router.Use(logger.GinMiddleware())         // 2. log each request (uses the ID from step 1)
+router.Use(middleware.DefaultCORS())       // 3. set CORS headers
+router.Use(middleware.DefaultRecovery())   // 4. catch panics → HTTP 500
+```
+
+**Order matters.** `DefaultRequestID` must run first so the request ID is available when `GinMiddleware` writes the log entry. Recovery should be last so it wraps the entire handler chain.
+
+</Step>
+
+<Step title="Add routes">
+
+Register a public login route that generates a token pair, then protect a group of routes with `middleware.Auth`.
+
+```go
+// Public route — no auth required
+router.POST("/login", func(c *gin.Context) {
+    userID := uuid.New()
+    pair, err := jwt.GeneratePair(userID, "user")
+    if err != nil {
+        c.JSON(500, gin.H{"error": "token error"})
+        return
+    }
+    c.JSON(200, gin.H{
+        "access_token":  pair.AccessToken,
+        "refresh_token": pair.RefreshToken,
+    })
+})
+
+// Protected group — every request must carry a valid JWT
+api := router.Group("/api")
+api.Use(middleware.Auth(middleware.AuthConfig{
+    SkipPaths: []string{"/login"},
+}))
+api.GET("/me", func(c *gin.Context) {
+    userID, _ := middleware.GetUserID(c)
+    role, _   := middleware.GetUserRole(c)
+    c.JSON(200, gin.H{"user_id": userID, "role": role})
+})
+```
+
+`middleware.Auth` reads the token from the `Authorization: Bearer <token>` header or a `token` cookie. Requests with a missing or invalid token receive HTTP 401; requests with valid tokens but insufficient claims receive HTTP 403.
+
+</Step>
+
+<Step title="Start the server">
+
+Log a startup message and call `router.Run`:
+
+```go
+logger.Info("Server starting on :8080")
+router.Run(":8080")
+```
+
+Run your server and send a request to try it out:
+
+```bash
+# Get a token pair
+curl -s -X POST http://localhost:8080/login | jq .
+
+# Call the protected endpoint
+curl -s -H "Authorization: Bearer <access_token>" http://localhost:8080/api/me | jq .
+```
+
+</Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Complete Example
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+Here is the full `main.go` combining every step above into a single compilable file.
+
+```go
+package main
+
+import (
+    "time"
+    "github.com/AndresGT/GoKit/logger"
+    "github.com/AndresGT/GoKit/middleware"
+    "github.com/AndresGT/GoKit/security/jwt"
+    "github.com/gin-gonic/gin"
+    "github.com/google/uuid"
+)
+
+func main() {
+    jwt.Configure(jwt.Config{
+        Secret:              "my-super-secret-key-at-least-32ch!!",
+        AccessTokenDuration: 24 * time.Hour,
+        Issuer:              "my-api",
+    })
+
+    logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+    })
+
+    router := gin.New()
+    router.Use(middleware.DefaultRequestID())
+    router.Use(logger.GinMiddleware())
+    router.Use(middleware.DefaultCORS())
+    router.Use(middleware.DefaultRecovery())
+
+    // Public route
+    router.POST("/login", func(c *gin.Context) {
+        userID := uuid.New()
+        pair, err := jwt.GeneratePair(userID, "user")
+        if err != nil {
+            c.JSON(500, gin.H{"error": "token error"})
+            return
+        }
+        c.JSON(200, gin.H{
+            "access_token":  pair.AccessToken,
+            "refresh_token": pair.RefreshToken,
+        })
+    })
+
+    // Protected routes
+    api := router.Group("/api")
+    api.Use(middleware.Auth(middleware.AuthConfig{
+        SkipPaths: []string{"/login"},
+    }))
+    api.GET("/me", func(c *gin.Context) {
+        userID, _ := middleware.GetUserID(c)
+        role, _   := middleware.GetUserRole(c)
+        c.JSON(200, gin.H{"user_id": userID, "role": role})
+    })
+
+    logger.Info("Server starting on :8080")
+    router.Run(":8080")
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Logger" icon="scroll" href="/logger/overview">
+    Add file and database writers, use context helpers, and register routes with automatic log output.
+  </Card>
+  <Card title="Security — Hash" icon="shield-halved" href="/security/hash">
+    Hash and verify passwords with bcrypt or Argon2id, and generate cryptographically secure tokens.
+  </Card>
+  <Card title="Security — JWT" icon="key" href="/security/jwt">
+    Refresh token pairs, embed custom claims, and validate tokens outside of the auth middleware.
+  </Card>
+  <Card title="Middleware" icon="layer-group" href="/middleware/auth">
+    Configure CORS for production, require specific roles, and customise the recovery error handler.
+  </Card>
+</CardGroup>

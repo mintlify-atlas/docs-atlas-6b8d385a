@@ -1,0 +1,288 @@
+---
+title: "Password Hashing with bcrypt and Argon2id in GoKit"
+sidebarTitle: "Hashing"
+description: "GoKit's hash package supports bcrypt and Argon2id password hashing with automatic algorithm detection, rehash detection, and secure random token generation."
+---
+
+GoKit's `hash` package gives you production-ready password hashing out of the box. It supports both **bcrypt** (the default) and **Argon2id**, validates password length automatically, detects which algorithm was used on verification so you can migrate algorithms gradually, and provides cryptographically secure token generation for flows like password resets and email verification.
+
+## Import
+
+```go
+import "github.com/AndresGT/GoKit/security/hash"
+```
+
+## Overview
+
+The package ships with safe defaults so you can start hashing without any configuration. When you call `Verify`, the algorithm is detected automatically from the hash's prefix — meaning you can switch your app from bcrypt to Argon2id without invalidating any stored hashes. Existing bcrypt hashes keep working, and new hashes are written in Argon2id format.
+
+<CardGroup cols={2}>
+  <Card title="bcrypt" icon="shield-halved">
+    The default algorithm. Fast, widely supported, and appropriate for most applications. Configure the work factor with `BcryptCost`.
+  </Card>
+  <Card title="Argon2id" icon="lock">
+    The modern standard. More resistant to GPU and ASIC brute-force attacks. Recommended for security-critical systems.
+  </Card>
+</CardGroup>
+
+## Core API
+
+### `hash.Hash`
+
+```go
+func Hash(password string) (string, error)
+```
+
+Hashes a password using the globally configured algorithm (bcrypt by default). Returns the encoded hash string ready to store in your database.
+
+**Errors returned:**
+- Password is empty
+- Password is shorter than `MinLength` (default: 8 characters)
+- Password is longer than `MaxLength` (default: 128 characters)
+
+```go
+hashed, err := hash.Hash("my-secure-password")
+if err != nil {
+    // handle: empty, too short (<8), or too long (>128)
+    log.Fatal(err)
+}
+// Store hashed in your database
+fmt.Println(hashed)
+// $2a$10$... (bcrypt) or $argon2id$v=19$... (Argon2id)
+```
+
+---
+
+### `hash.Verify`
+
+```go
+func Verify(password, hash string) (bool, error)
+```
+
+Verifies a plaintext password against a stored hash. **Auto-detects the algorithm** from the hash prefix — you never need to track which algorithm was used.
+
+| Hash prefix | Algorithm detected |
+|---|---|
+| `$2a$`, `$2b$`, `$2y$` | bcrypt |
+| `$argon2id$` | Argon2id |
+
+```go
+ok, err := hash.Verify("my-secure-password", storedHash)
+if err != nil {
+    log.Fatal(err)
+}
+
+if ok {
+    fmt.Println("Password is correct")
+} else {
+    fmt.Println("Invalid password")
+}
+```
+
+<Tip>
+  Argon2id verification uses `crypto/subtle.ConstantTimeCompare` internally, which prevents timing side-channel attacks. The comparison always takes the same amount of time regardless of where the bytes differ.
+</Tip>
+
+---
+
+### `hash.NeedsRehash`
+
+```go
+func NeedsRehash(hash string) bool
+```
+
+Returns `true` if a bcrypt hash was produced at a lower cost factor than the one currently configured. This lets you silently upgrade password security at login time, without forcing users to reset their passwords.
+
+Returns `true` for hashes with an unknown algorithm format as well.
+
+```go
+if hash.NeedsRehash(storedHash) {
+    newHash, err := hash.Hash(plainPassword)
+    if err == nil {
+        // Overwrite the old hash in your database
+        db.UpdatePasswordHash(userID, newHash)
+    }
+}
+```
+
+---
+
+### `hash.GenerateSecureToken`
+
+```go
+func GenerateSecureToken() (string, error)
+```
+
+Generates a cryptographically random 32-byte token encoded as base64url. Use this for password reset links, email verification tokens, API keys, and similar one-time secrets.
+
+```go
+token, err := hash.GenerateSecureToken()
+if err != nil {
+    log.Fatal(err)
+}
+// token is a 44-character base64url string (32 bytes → ~43 chars + padding)
+// e.g. "dGhpcyBpcyBhIHRlc3Qgc3RyaW5nCg=="
+```
+
+---
+
+### `hash.GenerateRandomToken`
+
+```go
+func GenerateRandomToken(length int) (string, error)
+```
+
+Same as `GenerateSecureToken` but lets you specify the number of random bytes. A `length` of 0 or negative returns an error.
+
+```go
+// 64 bytes of entropy for extra-sensitive tokens
+token, err := hash.GenerateRandomToken(64)
+```
+
+---
+
+## Configuration
+
+Call `hash.Configure` once at startup (e.g. in `main` or an `init` function) to change the algorithm or tune parameters. Any fields left as zero values fall back to their defaults.
+
+```go
+func Configure(cfg Config)
+```
+
+<Note>
+  `Configure` sets global state protected by a `sync.RWMutex`. It is safe to call from any goroutine, but calling it after the application has started serving requests will immediately affect all subsequent `Hash` calls.
+</Note>
+
+### `Config` fields
+
+<ParamField path="Algorithm" type="Algorithm" default="hash.AlgBcrypt">
+  Which algorithm to use for new hashes. Either `hash.AlgBcrypt` or `hash.AlgArgon2`. Does not affect verification of existing hashes.
+</ParamField>
+
+<ParamField path="BcryptCost" type="int" default="10 (bcrypt.DefaultCost)">
+  The bcrypt work factor. Higher values are slower but more resistant to brute force. Valid range is `bcrypt.MinCost` (4) to `bcrypt.MaxCost` (31).
+</ParamField>
+
+<ParamField path="MinLength" type="int" default="8">
+  Minimum password length in Unicode code points. `Hash` returns an error for passwords shorter than this.
+</ParamField>
+
+<ParamField path="MaxLength" type="int" default="128">
+  Maximum password length in Unicode code points. `Hash` returns an error for passwords longer than this.
+</ParamField>
+
+<ParamField path="Argon2" type="Argon2Params">
+  Parameters for Argon2id hashing. Only used when `Algorithm` is `hash.AlgArgon2`.
+</ParamField>
+
+### `Argon2Params` fields
+
+<ParamField path="Memory" type="uint32" default="65536 (64 MiB)">
+  Memory usage in KiB. Higher values increase resistance to parallel attacks.
+</ParamField>
+
+<ParamField path="Iterations" type="uint32" default="3">
+  Number of passes (time cost). Increase to trade CPU time for greater resistance.
+</ParamField>
+
+<ParamField path="Parallelism" type="uint8" default="2">
+  Number of parallel threads. Should match your CPU core count or be set conservatively.
+</ParamField>
+
+<ParamField path="SaltLength" type="uint32" default="16">
+  Random salt size in bytes. 16 bytes (128 bits) is the recommended minimum.
+</ParamField>
+
+<ParamField path="KeyLength" type="uint32" default="32">
+  Output hash size in bytes. 32 bytes (256 bits) provides a strong output.
+</ParamField>
+
+---
+
+### Example: Switch to Argon2id
+
+```go
+func init() {
+    hash.Configure(hash.Config{
+        Algorithm: hash.AlgArgon2,
+        MinLength: 8,
+        MaxLength: 128,
+        Argon2: hash.Argon2Params{
+            Memory:      64 * 1024, // 64 MiB
+            Iterations:  3,
+            Parallelism: 2,
+            SaltLength:  16,
+            KeyLength:   32,
+        },
+    })
+}
+```
+
+After this call, `hash.Hash` produces `$argon2id$...` strings. Existing bcrypt hashes stored in your database still verify correctly because `Verify` detects the algorithm automatically.
+
+---
+
+### Example: Increase bcrypt cost
+
+```go
+func init() {
+    hash.Configure(hash.Config{
+        Algorithm:  hash.AlgBcrypt,
+        BcryptCost: 12, // default is 10; each step doubles hashing time
+    })
+}
+```
+
+---
+
+### Example: Rehash on login
+
+Use `NeedsRehash` during login to transparently upgrade stored hashes when you raise the cost factor — no password resets required.
+
+<Steps>
+  <Step title="Verify the user's password as normal">
+    ```go
+    ok, err := hash.Verify(req.Password, user.PasswordHash)
+    if err != nil || !ok {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+        return
+    }
+    ```
+  </Step>
+  <Step title="Check if the stored hash needs upgrading">
+    ```go
+    if hash.NeedsRehash(user.PasswordHash) {
+        newHash, err := hash.Hash(req.Password)
+        if err == nil {
+            // Save the upgraded hash to your database
+            db.UpdatePasswordHash(user.ID, newHash)
+        }
+    }
+    ```
+  </Step>
+  <Step title="Continue with normal login flow">
+    ```go
+    pair, _ := jwt.GeneratePair(user.ID, user.Role)
+    c.JSON(http.StatusOK, gin.H{
+        "access_token":  pair.AccessToken,
+        "refresh_token": pair.RefreshToken,
+    })
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Security notes
+
+<Warning>
+  By default, `Hash` enforces a minimum of **8 characters** and a maximum of **128 characters**. Passwords outside this range return an error — handle it and respond with a clear validation message to the user, never log the plaintext password.
+</Warning>
+
+<Tip>
+  Argon2id verification uses `crypto/subtle.ConstantTimeCompare`, which means the comparison runs in constant time regardless of how many bytes match. This closes the timing side-channel that naive `bytes.Equal` comparisons are vulnerable to.
+</Tip>
+
+<Note>
+  `Configure` is global and affects every subsequent call to `Hash`. Call it once at application startup before serving any requests. If you need per-request or per-handler algorithm control, manage your own `Config` values and call the underlying bcrypt/argon2 functions directly.
+</Note>

@@ -1,0 +1,264 @@
+---
+title: "Integrate GoKit Logger with Gin"
+sidebarTitle: "Gin Integration"
+description: "Use GoKit's Gin middleware for automatic per-request logging with request ID, IP, method, path, status, and latency injected into every log entry."
+---
+
+GoKit's `logger` package ships first-class Gin middleware so that every HTTP request automatically gets a structured log entry with its request ID, client IP, HTTP method, path, status code, and latency — all without writing a single line of logging code in your handlers. A request-scoped `*Logger` is stored in the Gin context and made available through helper functions that any handler can call.
+
+## GinMiddleware
+
+`GinMiddleware` is the core logging middleware. Register it on your router once and every request flowing through that router will be logged automatically.
+
+### What it does
+
+<Steps>
+  <Step title="Assigns a Request ID">
+    Reads the `X-Request-ID` header from the incoming request. If the header is absent, a new UUID is generated. The ID is written back to the response as `X-Request-ID`.
+  </Step>
+  <Step title="Creates a contextual logger">
+    Forks the global logger with five fields pre-attached: `request_id`, `method`, `path`, `ip`, and `user_agent`.
+  </Step>
+  <Step title="Stores the logger in Gin's context">
+    Calls `c.Set("logger", reqLogger)` so handlers can retrieve it with `logger.GetLogger(c)`.
+  </Step>
+  <Step title="Logs request completion">
+    After the handler chain returns, emits a log entry at the appropriate level — `Info` for 2xx/3xx, `Warn` for 4xx, `Error` for 5xx — with the final HTTP status and request latency.
+  </Step>
+</Steps>
+
+### Registering the middleware
+
+```go
+package main
+
+import (
+    "github.com/AndresGT/GoKit/logger"
+    "github.com/gin-gonic/gin"
+)
+
+func main() {
+    logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+    })
+
+    r := gin.New() // use gin.New(), not gin.Default() — GoKit provides its own middleware
+
+    r.Use(logger.GinMiddleware())
+    r.Use(logger.GinRecovery())
+
+    r.GET("/ping", pingHandler)
+    r.Run(":8080")
+}
+```
+
+<Note>
+Use `gin.New()` instead of `gin.Default()`. `gin.Default()` registers Gin's own logger and recovery middleware; using it alongside GoKit's middleware will produce duplicate log output.
+</Note>
+
+---
+
+## GinRecovery
+
+`GinRecovery` is a lightweight panic recovery middleware. When any handler in the chain panics, `GinRecovery` catches the error, logs it at `ErrorLevel` with the `panic`, `method`, `path`, and `ip` fields, then responds with HTTP 500.
+
+```go
+r.Use(logger.GinRecovery())
+```
+
+Example log output on panic:
+
+```
+2024-03-15 14:33:11 ✖ [ERROR] Panic recovered | panic=runtime error: index out of range method=GET path=/users/99 ip=203.0.113.5
+```
+
+<Note>
+For production deployments that require full stack traces in the log entry, consider using the `middleware.Recovery` middleware from GoKit's `middleware` package instead. `GinRecovery` is a lightweight alternative suitable for development and staging.
+</Note>
+
+---
+
+## Accessing the logger inside handlers
+
+### `logger.GetLogger(c *gin.Context) *Logger`
+
+Returns the request-scoped `*Logger` stored in the Gin context by `GinMiddleware`. If the middleware was not registered (for example in a unit test), it falls back to the global logger so your handlers never have to guard against a nil logger.
+
+```go
+func GetUserHandler(c *gin.Context) {
+    log := logger.GetLogger(c)
+
+    userID := c.Param("id")
+    log.Info("Fetching user %s", userID)
+
+    user, err := userService.GetByID(userID)
+    if err != nil {
+        log.Error("User lookup failed: %v", err)
+        c.JSON(500, gin.H{"error": "internal error"})
+        return
+    }
+
+    c.JSON(200, user)
+}
+```
+
+Because `GetLogger` returns the request-scoped logger, all log entries from that handler automatically include the `request_id`, `ip`, `method`, and `path` fields set by the middleware.
+
+### Helper functions
+
+Four convenience functions retrieve the request logger and call the appropriate method in a single call — useful when you only need to emit one entry and don't need to hold a reference to the logger:
+
+| Function | Equivalent to |
+|---|---|
+| `logger.LogRequestInfo(c, format, args...)` | `GetLogger(c).Info(format, args...)` |
+| `logger.LogRequestWarn(c, format, args...)` | `GetLogger(c).Warn(format, args...)` |
+| `logger.LogRequestError(c, format, args...)` | `GetLogger(c).Error(format, args...)` |
+| `logger.LogRequestSecurity(c, format, args...)` | `GetLogger(c).Security(format, args...)` |
+
+```go
+func LoginHandler(c *gin.Context) {
+    var req LoginRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        logger.LogRequestWarn(c, "Invalid login payload: %v", err)
+        c.JSON(400, gin.H{"error": "bad request"})
+        return
+    }
+
+    user, err := authService.Authenticate(req.Email, req.Password)
+    if err != nil {
+        logger.LogRequestSecurity(c, "Failed login attempt for %s", req.Email)
+        c.JSON(401, gin.H{"error": "unauthorized"})
+        return
+    }
+
+    logger.LogRequestInfo(c, "User %s authenticated", user.ID)
+    c.JSON(200, gin.H{"token": user.Token})
+}
+```
+
+---
+
+## Route registration helpers
+
+GoKit provides three functions that register a Gin route **and** emit an `[INFO]`-level log entry describing it. Use them instead of calling `group.GET(...)` or `group.POST(...)` directly to get a printed route map every time your application starts.
+
+### `logger.RegisterRoute`
+
+Registers a single route and logs it using the default `RouteConfig`.
+
+```go
+func RegisterRoute(
+    group     *gin.RouterGroup,
+    method    string,
+    path      string,
+    handler   gin.HandlerFunc,
+    protected bool,
+)
+```
+
+### `logger.RegisterRouteWithConfig`
+
+Same as `RegisterRoute` but accepts a custom `RouteConfig`.
+
+```go
+func RegisterRouteWithConfig(
+    group     *gin.RouterGroup,
+    method    string,
+    path      string,
+    handler   gin.HandlerFunc,
+    protected bool,
+    cfg       logger.RouteConfig,
+)
+```
+
+<ParamField body="RouteConfig.ShowProtected" type="bool" default="true">
+  When `true`, protected routes are prefixed with a 🔒 icon in the log output.
+</ParamField>
+
+<ParamField body="RouteConfig.ShowTimestamp" type="bool" default="false">
+  When `true`, a `HH:MM:SS` timestamp is prepended to each route log line.
+</ParamField>
+
+### `logger.RegisterRoutes`
+
+Batch-registers a slice of `Route` values.
+
+```go
+type Route struct {
+    Method    string
+    Path      string
+    Handler   gin.HandlerFunc
+    Protected bool
+}
+
+func RegisterRoutes(group *gin.RouterGroup, routes []Route)
+```
+
+### Example
+
+```go
+v1 := router.Group("/api/v1")
+
+logger.RegisterRoutes(v1, []logger.Route{
+    {Method: "GET",    Path: "/users",     Handler: getUsers,    Protected: true},
+    {Method: "POST",   Path: "/users",     Handler: createUser,  Protected: true},
+    {Method: "DELETE", Path: "/users/:id", Handler: deleteUser,  Protected: true},
+    {Method: "POST",   Path: "/login",     Handler: login,       Protected: false},
+})
+```
+
+Console output at startup:
+
+```
+[ROUTE] 🔒 [GET]    /api/v1/users
+[ROUTE] 🔒 [POST]   /api/v1/users
+[ROUTE] 🔒 [DELETE] /api/v1/users/:id
+[ROUTE] →  [POST]   /api/v1/login
+```
+
+HTTP method names are color-coded: **GET** → blue, **POST** → green, **PUT** → yellow, **PATCH** → cyan, **DELETE** → red. This makes it easy to scan the startup output and spot which routes are public vs. protected.
+
+---
+
+## Full router setup example
+
+The following snippet shows a complete, production-style router setup combining `InitGlobal`, both middlewares, and batch route registration:
+
+```go
+package main
+
+import (
+    "github.com/AndresGT/GoKit/logger"
+    "github.com/gin-gonic/gin"
+)
+
+func main() {
+    // 1. Initialise the global logger once
+    log := logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+    })
+    defer log.Close()
+
+    // 2. Create a bare Gin engine (no built-in middleware)
+    r := gin.New()
+
+    // 3. Attach GoKit middleware
+    r.Use(logger.GinMiddleware())
+    r.Use(logger.GinRecovery())
+
+    // 4. Register routes with automatic logging
+    v1 := r.Group("/api/v1")
+    logger.RegisterRoutes(v1, []logger.Route{
+        {Method: "GET",  Path: "/users",    Handler: getUsersHandler,  Protected: true},
+        {Method: "POST", Path: "/users",    Handler: createUserHandler, Protected: true},
+        {Method: "POST", Path: "/login",    Handler: loginHandler,     Protected: false},
+    })
+
+    logger.Info("Server listening on :8080")
+    r.Run(":8080")
+}
+```

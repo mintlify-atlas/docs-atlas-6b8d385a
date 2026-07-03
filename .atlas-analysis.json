@@ -1,0 +1,117 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "GoKit",
+  "projectDescription": "A Go toolkit for rapid API development with Gin, providing a structured logger, JWT/hash security utilities, and production-ready middlewares.",
+  "theme": "luma",
+  "primaryColor": "#73dff6",
+  "lightColor": "#37454c",
+  "darkColor": "#cfbdb2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "installation", "quickstart"]
+          },
+          {
+            "group": "Logger",
+            "pages": [
+              "logger/overview",
+              "logger/configuration",
+              "logger/writers",
+              "logger/gin-integration"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/hash",
+              "security/jwt"
+            ]
+          },
+          {
+            "group": "Middleware",
+            "pages": [
+              "middleware/auth",
+              "middleware/cors",
+              "middleware/recovery",
+              "middleware/request-id"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/full-setup",
+              "guides/error-reference"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Structured logger with multiple output writers (console, file, database)",
+    "Gin middleware integration with automatic request logging",
+    "JWT access and refresh token generation and validation",
+    "Password hashing with bcrypt and Argon2id support",
+    "Auth middleware with configurable skip paths and role enforcement",
+    "CORS middleware with development and production presets",
+    "Panic recovery middleware with stack trace logging",
+    "Request ID middleware for distributed tracing"
+  ],
+  "publicApiSurface": [
+    "logger.New(Config) *Logger",
+    "logger.InitGlobal(Config) *Logger",
+    "logger.SetDefault(*Logger)",
+    "logger.Default() *Logger",
+    "logger.Debug / Info / Warn / Error / Fatal / Security / Success",
+    "logger.WithFields(Fields) *Logger",
+    "logger.WithUser(uuid.UUID) *Logger",
+    "logger.WithRequest(endpoint, ip string) *Logger",
+    "logger.WithContext(ctx) *Logger",
+    "logger.DisableLogs() / EnableLogs()",
+    "logger.NewConsoleWriter(enableColors bool) *ConsoleWriter",
+    "logger.NewFileWriter(path string) (*FileWriter, error)",
+    "logger.NewDBWriter(db *gorm.DB, buffer int) (*DBWriter, error)",
+    "logger.GinMiddleware() gin.HandlerFunc",
+    "logger.GinRecovery() gin.HandlerFunc",
+    "logger.GetLogger(c *gin.Context) *Logger",
+    "logger.LogRequestInfo / LogRequestWarn / LogRequestError / LogRequestSecurity",
+    "logger.RegisterRoute / RegisterRoutes",
+    "hash.Configure(Config)",
+    "hash.Hash(password string) (string, error)",
+    "hash.Verify(password, hash string) (bool, error)",
+    "hash.NeedsRehash(hash string) bool",
+    "hash.GenerateSecureToken() (string, error)",
+    "hash.GenerateRandomToken(length int) (string, error)",
+    "jwt.Configure(Config)",
+    "jwt.Generate(userID, role) (string, error)",
+    "jwt.GenerateWithExtra(userID, role, extra) (string, error)",
+    "jwt.GeneratePair(userID, role) (*TokenPair, error)",
+    "jwt.GenerateRefreshToken(userID, role) (string, error)",
+    "jwt.MustGenerate(userID, role) string",
+    "jwt.Validate(tokenString) (*Claims, error)",
+    "jwt.ValidateRefreshToken(tokenString) (*Claims, error)",
+    "jwt.Refresh(refreshToken) (*TokenPair, error)",
+    "jwt.IsExpired(tokenString) bool",
+    "jwt.GetUserID(tokenString) (uuid.UUID, error)",
+    "jwt.GetClaims(tokenString) (*Claims, error)",
+    "middleware.Auth(AuthConfig) gin.HandlerFunc",
+    "middleware.RequireRole(roles ...string) gin.HandlerFunc",
+    "middleware.GetUserID(c) (uuid.UUID, bool)",
+    "middleware.GetUserRole(c) (string, bool)",
+    "middleware.GetClaims(c) (*jwt.Claims, bool)",
+    "middleware.CORS(CORSConfig) gin.HandlerFunc",
+    "middleware.DefaultCORS() gin.HandlerFunc",
+    "middleware.ProductionCORSConfig(origins) CORSConfig",
+    "middleware.Recovery(RecoveryConfig) gin.HandlerFunc",
+    "middleware.DefaultRecovery() gin.HandlerFunc",
+    "middleware.ProductionRecovery() gin.HandlerFunc",
+    "middleware.RequestID(RequestIDConfig) gin.HandlerFunc",
+    "middleware.DefaultRequestID() gin.HandlerFunc",
+    "middleware.StrictRequestID() gin.HandlerFunc",
+    "middleware.GetRequestID(c) string"
+  ]
+}

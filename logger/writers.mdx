@@ -1,0 +1,263 @@
+---
+title: "Logger Writers: Console, File, and Database Output"
+sidebarTitle: "Writers"
+description: "GoKit ships three log writers: a colored console writer, a JSON file writer, and an async GORM database writer. Use multiple writers together."
+---
+
+Every `*Logger` instance holds a slice of `Writer` values. When a log entry is emitted, all writers receive the entry concurrently in separate goroutines, so a slow database writer never blocks your console output. GoKit ships three built-in writers — `ConsoleWriter`, `FileWriter`, and `DBWriter` — that you can combine freely. You can also implement the `Writer` interface yourself to send logs anywhere you like.
+
+## ConsoleWriter
+
+`ConsoleWriter` prints each entry to `os.Stdout` in a human-readable format. It is the default writer used when you create a logger without providing a `Writers` slice.
+
+### Creating a ConsoleWriter
+
+```go
+consoleWriter := logger.NewConsoleWriter(enableColors bool) *ConsoleWriter
+```
+
+Pass `true` to wrap output lines in ANSI terminal colors; pass `false` for plain text (recommended in CI environments or when piping to another tool).
+
+### Output format
+
+Each line follows this pattern:
+
+```
+TIMESTAMP ICON [LEVEL] MESSAGE | key=value key=value
+```
+
+For example:
+
+```
+2024-03-15 14:22:01 ℹ [INFO] Server started on :8080 | service=my-api
+2024-03-15 14:22:05 ⚠ [WARNING] Cache miss — falling back to DB | user_id=abc123
+2024-03-15 14:22:09 ✖ [ERROR] Payment failed | request_id=xyz endpoint=/pay
+```
+
+### Color and icon reference
+
+| Level | Icon | Console color |
+|---|---|---|
+| `DebugLevel` | 🔍 | White |
+| `InfoLevel` | ℹ | Cyan |
+| `WarnLevel` | ⚠ | Yellow |
+| `ErrorLevel` | ✖ | Red |
+| `FatalLevel` | 💀 | Hi-red + Bold |
+| `SecurityLevel` | 🔒 | Magenta + Bold |
+
+<Tip>
+When running inside Docker or a log aggregation pipeline that does not interpret ANSI codes, construct your console writer with `NewConsoleWriter(false)` to avoid garbled output.
+</Tip>
+
+---
+
+## FileWriter
+
+`FileWriter` appends JSON-encoded `Entry` objects to a file, one per line. This produces a structured log stream that tools like `jq`, Loki, or Elasticsearch can parse and query easily.
+
+### Creating a FileWriter
+
+```go
+fileWriter, err := logger.NewFileWriter(path string) (*FileWriter, error)
+```
+
+The file is opened (or created) with `O_CREATE|O_WRONLY|O_APPEND` flags and `0644` permissions. If the directory does not exist or permissions are insufficient, an error is returned.
+
+### Example JSON entry
+
+```json
+{"id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","level":1,"message":"Server started","timestamp":"2024-03-15T14:22:01Z","service":"my-api","fields":{"port":8080}}
+```
+
+### Usage example
+
+```go
+fileWriter, err := logger.NewFileWriter("logs/app.log")
+if err != nil {
+    panic(err)
+}
+
+log := logger.New(logger.Config{
+    MinLevel: logger.InfoLevel,
+    Writers: []logger.Writer{
+        logger.NewConsoleWriter(true),
+        fileWriter,
+    },
+})
+defer log.Close()
+
+log.Info("Application started")
+```
+
+<Warning>
+Always call `log.Close()` (or `defer log.Close()`) when using `FileWriter`. Skipping this step may leave the underlying file handle open and lose any buffered entries.
+</Warning>
+
+---
+
+## DBWriter
+
+`DBWriter` persists log entries to a PostgreSQL (or any GORM-compatible) database. Writes are non-blocking: entries are pushed onto an internal buffered channel and flushed to the database in batches by a dedicated background goroutine.
+
+### Creating a DBWriter
+
+```go
+dbWriter, err := logger.NewDBWriter(db *gorm.DB, buffer int) (*DBWriter, error)
+```
+
+<ParamField body="db" type="*gorm.DB" required>
+  An open GORM database connection. `NewDBWriter` calls `db.AutoMigrate(&AppLog{})` automatically on creation, so the `app_logs` table is created or updated without any manual migration step.
+</ParamField>
+
+<ParamField body="buffer" type="int" required>
+  The capacity of the internal entry queue. A value of `500` is a sensible default for most APIs. If the queue fills up before the worker can flush, new entries are dropped with an error written to `stderr`.
+</ParamField>
+
+### Flush behaviour
+
+- The background worker accumulates entries and flushes when **either** 100 entries have been collected **or** one second has elapsed — whichever comes first.
+- Batching keeps database round-trips low even under high request volume.
+
+### The `AppLog` model
+
+`NewDBWriter` automatically migrates the following model:
+
+```go
+type AppLog struct {
+    ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
+    Level     string     `gorm:"type:varchar(20)"`
+    Message   string     `gorm:"type:text"`
+    UserID    *uuid.UUID `gorm:"type:uuid;nullable"`
+    IP        string     `gorm:"type:varchar(45)"`
+    Method    string     `gorm:"type:varchar(10)"`
+    Path      string     `gorm:"type:varchar(255)"`
+    UserAgent string     `gorm:"type:text"`
+    RequestID string     `gorm:"type:varchar(128)"`
+    Extra     []byte     `gorm:"type:jsonb"`
+    CreatedAt time.Time
+}
+```
+
+Known fields — `ip`, `method`, `path`, `user_agent`, `request_id`, and `user_id` — are automatically extracted from `Entry.Fields` and stored in their dedicated columns. Any remaining fields are serialised into the `Extra` JSONB column.
+
+### Usage example
+
+```go
+import (
+    "github.com/AndresGT/GoKit/logger"
+    "gorm.io/driver/postgres"
+    "gorm.io/gorm"
+)
+
+func main() {
+    dsn := "host=localhost user=postgres password=secret dbname=myapp port=5432"
+    db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+    if err != nil {
+        panic(err)
+    }
+
+    dbWriter, err := logger.NewDBWriter(db, 500)
+    if err != nil {
+        panic(err)
+    }
+
+    log := logger.New(logger.Config{
+        MinLevel: logger.InfoLevel,
+        Writers: []logger.Writer{
+            logger.NewConsoleWriter(true),
+            dbWriter,
+        },
+    })
+    defer log.Close() // drains the queue before exit
+
+    logger.InitGlobal(logger.Config{
+        Writers: []logger.Writer{dbWriter},
+    })
+}
+```
+
+<Warning>
+Always call `log.Close()` before your process exits when using `DBWriter`. The background worker holds pending entries in memory; skipping `Close` will silently abandon any unflushed entries in the queue.
+</Warning>
+
+---
+
+## Implementing a custom Writer
+
+Any type that satisfies the `Writer` interface can be added to a logger's writer slice:
+
+```go
+type Writer interface {
+    Write(entry *Entry) error
+    Close() error
+}
+```
+
+`Write` is called concurrently from multiple goroutines, so your implementation must be thread-safe. `Close` is called once when `(*Logger).Close()` is invoked — use it to flush buffers and release resources.
+
+### Minimal example — write to an HTTP endpoint
+
+```go
+type HTTPWriter struct {
+    endpoint string
+    client   *http.Client
+}
+
+func (w *HTTPWriter) Write(entry *logger.Entry) error {
+    body, err := json.Marshal(entry)
+    if err != nil {
+        return err
+    }
+    resp, err := w.client.Post(w.endpoint, "application/json", bytes.NewReader(body))
+    if err != nil {
+        return err
+    }
+    return resp.Body.Close()
+}
+
+func (w *HTTPWriter) Close() error { return nil }
+```
+
+Then register it like any other writer:
+
+```go
+log := logger.New(logger.Config{
+    Writers: []logger.Writer{
+        logger.NewConsoleWriter(true),
+        &HTTPWriter{endpoint: "https://logs.example.com/ingest", client: http.DefaultClient},
+    },
+})
+```
+
+---
+
+## Using multiple writers together
+
+Combine all three built-in writers to get console visibility, persistent JSON storage, and database search in one logger:
+
+```go
+fileWriter, err := logger.NewFileWriter("logs/app.log")
+if err != nil {
+    panic(err)
+}
+
+dbWriter, err := logger.NewDBWriter(db, 500)
+if err != nil {
+    panic(err)
+}
+
+log := logger.New(logger.Config{
+    MinLevel:    logger.InfoLevel,
+    ServiceName: "my-api",
+    Writers: []logger.Writer{
+        logger.NewConsoleWriter(true), // human-readable terminal output
+        fileWriter,                    // JSON file for log rotation / shipping
+        dbWriter,                      // queryable database records
+    },
+})
+defer log.Close()
+
+logger.SetDefault(log)
+```
+
+Every log call now fans out to all three destinations concurrently, with each writer isolated so a failure in one does not affect the others.

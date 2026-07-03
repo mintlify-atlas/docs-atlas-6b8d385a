@@ -1,0 +1,204 @@
+---
+title: "GoKit Error Reference and Behavior Guide"
+sidebarTitle: "Error Reference"
+description: "Complete reference for GoKit error values, panics, HTTP status codes, and edge-case behaviors across the logger, JWT, hash, and middleware packages."
+---
+
+This reference documents every error value, panic condition, HTTP status code, and noteworthy edge-case behavior you may encounter while using GoKit. Each section maps a specific situation to the exact error message, exported sentinel error, or runtime behavior produced by the library so you can handle or debug it confidently.
+
+## JWT errors and panics
+
+`jwt.Configure` validates its input immediately and panics on misconfiguration so problems surface at startup rather than at runtime. Token generation and validation return typed errors that you can inspect or compare with `errors.Is`.
+
+| Situation | Error / Behavior |
+|---|---|
+| `jwt.Configure` called with empty `Secret` | `panic: jwt: secret is required` |
+| `jwt.Configure` called with `Secret` shorter than 32 characters | `panic: jwt: secret must be at least 32 characters` |
+| `jwt.Generate` (or `GeneratePair`) called before `Configure` | `error: jwt: not configured, call Configure() first` |
+| Token signature does not match the secret | `jwt.Validate` returns an error from the underlying JWT library |
+| Token has expired (`exp` claim is in the past) | `jwt.Validate` returns an error |
+| `Issuer` in the token does not match the configured `Issuer` | `error: jwt: invalid issuer` |
+| Signing algorithm in the token header does not match `SigningMethod` | `error: unexpected signing method: <alg>` |
+| Token is not yet active (`nbf` claim is in the future) | `error: jwt: token not active yet` |
+| `jwt.MustGenerate` fails for any reason | `panic` (re-panics the underlying error) |
+
+<Warning>
+  Never call `jwt.GetClaims` in production code. It parses the token **without verifying the signature** and is intended for debugging only. Always use `jwt.Validate` to obtain trusted claims.
+</Warning>
+
+## Hash errors
+
+`hash.Hash` validates the password before hashing it and returns a descriptive error for every validation failure. `hash.Verify` detects the algorithm from the stored hash prefix and returns an error if the format is unrecognized.
+
+| Situation | Error / Behavior |
+|---|---|
+| Password passed to `hash.Hash` is an empty string | `error: password cannot be empty` |
+| Password length is below `MinLength` (default 8) | `error: password must be at least N characters` |
+| Password length exceeds `MaxLength` (default 128) | `error: password must be at most N characters` |
+| `hash.Verify` called with a hash whose prefix is not `$2a$`, `$2b$`, `$2y$`, or `$argon2id$` | `error: unknown hash algorithm` |
+| `hash.Verify` called with a malformed Argon2 hash (wrong number of `$`-delimited segments) | `error: invalid argon2 hash format` |
+
+<Tip>
+  Password length is counted in Unicode rune count, not byte count, so multi-byte characters (emoji, CJK) are counted as single characters. This avoids surprising users who type passwords in non-ASCII scripts.
+</Tip>
+
+## Middleware auth errors
+
+`middleware.Auth` extracts and validates the JWT on every non-skipped request. On failure it calls the configured `ErrorHandler` if one is set, or returns a JSON response with the status codes and body shown below.
+
+| Situation | HTTP Status | Sentinel error |
+|---|---|---|
+| No token in `Authorization` header or `token` cookie | `401 Unauthorized` | `middleware.ErrNoToken` |
+| Token present but invalid, expired, or signature mismatch | `401 Unauthorized` | `middleware.ErrInvalidToken` |
+| Token valid but `UserID` is `uuid.Nil` or `Role` is empty | `403 Forbidden` | `middleware.ErrInvalidClaims` |
+| Token valid and claims non-empty, but role not in `RequireRole` allowlist | `403 Forbidden` | `gin.H{"error": "forbidden"}` (no sentinel) |
+
+The default JSON response bodies are:
+
+```go
+// 401 — no token
+{"error": "unauthorized"}
+
+// 401 — invalid or expired token
+{"error": "unauthorized"}
+
+// 403 — invalid claims
+{"error": "invalid claims"}
+
+// 403 — role not allowed (RequireRole)
+{"error": "forbidden"}
+```
+
+<Note>
+  You can replace all of the above with your own response shape by supplying an `ErrorHandler` in `AuthConfig`:
+
+  ```go
+  middleware.Auth(middleware.AuthConfig{
+      ErrorHandler: func(c *gin.Context, err error) {
+          c.AbortWithStatusJSON(401, gin.H{
+              "ok":     false,
+              "reason": err.Error(),
+          })
+      },
+  })
+  ```
+</Note>
+
+## CORS panic
+
+| Situation | Behavior |
+|---|---|
+| `AllowCredentials: true` combined with `AllowOrigins: ["*"]` | `panic: CORS config error: AllowCredentials=true cannot be used with AllowOrigins="*"` |
+
+This panic fires at middleware registration time (when `router.Use(middleware.CORS(...))` is called), not at the first request. The combination is forbidden by the Fetch specification — browsers ignore `Access-Control-Allow-Credentials: true` when the origin is a wildcard.
+
+## Logger behaviors
+
+| Situation | Behavior |
+|---|---|
+| Any `Fatal`-level log is written | Writes the log entry to all configured writers, then calls `os.Exit(1)` |
+| `DBWriter.Write` is called while the internal queue is at capacity | Returns `error: log queue full` immediately (non-blocking); the entry is dropped |
+| `logger.DisableLogs()` is called | Sets `MinLevel` to `OffLevel`; no further entries are written until `EnableLogs()` is called |
+| `logger.InitGlobal` is called more than once | The second (and all subsequent) calls are silently ignored — the global logger is initialized with `sync.Once` |
+
+---
+
+## Common questions
+
+<Accordion title="Why does my server panic on startup?">
+  Two GoKit configurations cause panics at startup:
+
+  1. **JWT secret too short.** `jwt.Configure` panics if `Secret` is empty or fewer than 32 characters. Check the value you are passing — a common mistake is using an environment variable that is unset in a particular deployment.
+
+  ```go
+  // Ensure your secret is at least 32 characters
+  jwt.Configure(jwt.Config{
+      Secret: "my-super-secret-key-at-least-32ch!!",
+      // ...
+  })
+  ```
+
+  2. **CORS credentials with wildcard origin.** `middleware.CORS` panics if you set `AllowCredentials: true` alongside `AllowOrigins: ["*"]`. Use explicit origin lists when credentials are required:
+
+  ```go
+  middleware.CORS(middleware.CORSConfig{
+      AllowOrigins:     []string{"https://your-app.com"},
+      AllowCredentials: true,
+  })
+  ```
+</Accordion>
+
+<Accordion title="My token is valid but the Auth middleware returns 403">
+  A 403 from `middleware.Auth` means the token itself is cryptographically valid and not expired, but the **claims inside the token are empty or missing**. Specifically, `middleware.Auth` returns `ErrInvalidClaims` (HTTP 403) when either `UserID` equals `uuid.Nil` or `Role` is an empty string.
+
+  Check the call that generated the token:
+
+  ```go
+  // Both userID and role must be non-zero / non-empty
+  pair, err := jwt.GeneratePair(userID, "user")
+  ```
+
+  A 401 means the token is invalid or expired; a 403 means the token is structurally fine but the payload is incomplete. They are intentionally different status codes so you can distinguish them in client-side error handling.
+</Accordion>
+
+<Accordion title="How do I test handlers that use middleware.GetUserID?">
+  In unit tests, set the GoKit context keys directly on the `*gin.Context` before calling the handler. The keys are unexported constants but their string values are stable:
+
+  ```go
+  import "github.com/google/uuid"
+
+  // In your test setup:
+  c.Set("gokit:user_id",   uuid.New())
+  c.Set("gokit:user_role", "admin")
+  // Optionally set the full claims object:
+  // c.Set("gokit:claims", &jwt.Claims{...})
+  ```
+
+  The three context keys GoKit uses are:
+
+  | Key | Type | Set by |
+  |---|---|---|
+  | `"gokit:user_id"` | `uuid.UUID` | `middleware.Auth` |
+  | `"gokit:user_role"` | `string` | `middleware.Auth` |
+  | `"gokit:claims"` | `*jwt.Claims` | `middleware.Auth` |
+
+  Setting these manually bypasses `middleware.Auth` entirely, which is the correct approach for handler-level unit tests — you test the handler logic in isolation without needing a real JWT.
+</Accordion>
+
+<Accordion title="Can I use GoKit's logger without Gin?">
+  Yes. The core logger is completely independent of Gin. The following functions and types work in any Go program:
+
+  ```go
+  // Package-level global functions
+  logger.Debug("message")
+  logger.Info("server ready on port %d", 8080)
+  logger.Warn("approaching rate limit")
+  logger.Error("database query failed: %v", err)
+  logger.Fatal("unrecoverable error") // calls os.Exit(1)
+  logger.Security("suspicious request from %s", ip)
+
+  // Structured fields
+  logger.WithFields(logger.Fields{
+      "user_id": userID,
+      "action":  "login",
+  }).Info("user authenticated")
+
+  // Custom logger instance
+  log := logger.New(logger.Config{
+      MinLevel:     logger.DebugLevel,
+      EnableColors: true,
+      ServiceName:  "worker",
+  })
+  log.Info("worker started")
+  ```
+
+  The only parts that require Gin are:
+
+  | Function | Requires Gin |
+  |---|---|
+  | `logger.GinMiddleware()` | ✅ |
+  | `logger.GetLogger(c)` | ✅ |
+  | `logger.RegisterRoute` / `RegisterRoutes` | ✅ |
+  | `logger.LogRequestInfo` / `LogRequestWarn` / etc. | ✅ |
+  | Everything else | ❌ |
+</Accordion>

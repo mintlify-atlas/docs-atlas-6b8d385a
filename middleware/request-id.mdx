@@ -1,0 +1,145 @@
+---
+title: "Request ID Middleware for Gin with GoKit"
+sidebarTitle: "Request ID"
+description: "GoKit's RequestID middleware assigns a unique X-Request-ID to every Gin request, supports incoming ID trust, custom generators, and automatic logger injection."
+---
+
+The RequestID middleware assigns a unique identifier to every incoming request, stores it in the Gin context, and echoes it back in the `X-Request-ID` response header. Downstream handlers, loggers, and error responses can all reference the same ID — making it straightforward to correlate logs and trace a single request across services.
+
+## Import
+
+```go
+import "github.com/AndresGT/GoKit/middleware"
+```
+
+## Overview
+
+On each request the middleware:
+
+1. Reads the incoming header (default: `X-Request-ID`).
+2. If `TrustIncoming` is `true` and the value passes the validator, reuses the provided ID.
+3. Otherwise generates a new UUID via the configured `Generator`.
+4. Stores the ID in the Gin context under `"request_id"`.
+5. Writes the ID to the response header.
+6. Optionally injects a logger enriched with `request_id` into the context (when `InjectToLogger: true`).
+
+## Presets
+
+<CardGroup cols={2}>
+  <Card title="DefaultRequestID" icon="fingerprint">
+    Trusts a valid incoming `X-Request-ID`, generates a new UUID when none is provided, and injects `request_id` into the logger in context.
+
+    ```go
+    router.Use(middleware.DefaultRequestID())
+    ```
+  </Card>
+  <Card title="StrictRequestID" icon="lock">
+    Always generates a fresh UUID, ignoring any `X-Request-ID` sent by the client. Useful when you cannot trust callers to provide valid IDs.
+
+    ```go
+    router.Use(middleware.StrictRequestID())
+    ```
+  </Card>
+</CardGroup>
+
+## Reading the Request ID in Handlers
+
+Use `middleware.GetRequestID` to retrieve the ID from the Gin context at any point after the middleware has run:
+
+```go
+func MyHandler(c *gin.Context) {
+    requestID := middleware.GetRequestID(c)
+
+    // Include in log entries
+    logger.WithFields(logger.Fields{
+        "request_id": requestID,
+    }).Info("Processing request")
+
+    // Echo in the response
+    c.JSON(200, gin.H{
+        "request_id": requestID,
+        "data":       "...",
+    })
+}
+```
+
+### Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `middleware.RequestIDKey` | `"request_id"` | Context key used with `c.Get` |
+| `middleware.RequestIDHeader` | `"X-Request-ID"` | Default header name read and written |
+
+## Manual Configuration
+
+Use `middleware.RequestID(RequestIDConfig{...})` for full control:
+
+```go
+router.Use(middleware.RequestID(middleware.RequestIDConfig{
+    Header:         "X-Request-ID",
+    TrustIncoming:  true,
+    InjectToLogger: true,
+    Generator:      middleware.DefaultGenerator,
+    Validator:      middleware.DefaultValidator,
+}))
+```
+
+### RequestIDConfig Fields
+
+<ParamField body="Header" type="string">
+  The HTTP header name read from the request and written to the response. Defaults to `"X-Request-ID"`. Set to `"X-Trace-ID"` or any custom name to integrate with existing distributed tracing infrastructure.
+</ParamField>
+
+<ParamField body="Generator" type="func() string">
+  A function that returns a new request ID string. Defaults to `uuid.NewString()` from the Google UUID package. Replace it to add a custom prefix or use a different ID format.
+</ParamField>
+
+<ParamField body="Validator" type="func(string) bool">
+  A function that checks whether an incoming header value is acceptable before reusing it. Defaults to a regex that requires between 8 and 128 alphanumeric, hyphen, underscore, or dot characters: `^[a-zA-Z0-9\-_.]{8,128}$`.
+</ParamField>
+
+<ParamField body="TrustIncoming" type="bool">
+  When `true`, the middleware reuses a valid incoming ID from the request header. When `false` (as in `StrictRequestID`), a new ID is always generated regardless of what the client sends.
+</ParamField>
+
+<ParamField body="InjectToLogger" type="bool">
+  When `true`, creates a new logger with `request_id` pre-attached and stores it in the Gin context under the key `"logger"`. The GoKit logger middleware and `logger.GetLogger(c)` will automatically pick this up so every subsequent log entry for this request includes the request ID.
+</ParamField>
+
+## Custom Generator Example
+
+Use a custom header name, a prefixed ID format, and a simple length-based validator:
+
+```go
+router.Use(middleware.RequestID(middleware.RequestIDConfig{
+    Header:         "X-Trace-ID",
+    TrustIncoming:  true,
+    InjectToLogger: true,
+    Generator: func() string {
+        return "req-" + uuid.NewString()
+    },
+    Validator: func(id string) bool {
+        return len(id) >= 8 && len(id) <= 128
+    },
+}))
+```
+
+Handlers can then read the ID from the same context key regardless of the header name:
+
+```go
+requestID := middleware.GetRequestID(c) // always reads from "request_id" context key
+```
+
+## Middleware Ordering
+
+<Note>
+  Add `RequestID` **first** in your middleware chain — before the logger middleware — so that every subsequent log entry automatically includes the request ID. If `InjectToLogger` is `true`, the enriched logger is stored in the context as soon as `RequestID` runs, and all downstream log calls made via `logger.GetLogger(c)` will carry the ID.
+
+  ```go
+  router.Use(middleware.DefaultRequestID()) // 1st — assigns and injects ID
+  router.Use(logger.GinMiddleware())         // 2nd — picks up request_id from context
+  router.Use(middleware.DefaultRecovery())   // 3rd — can read ID in recovery handler
+  router.Use(middleware.DefaultCORS())       // 4th
+  router.Use(middleware.Auth(...))           // 5th
+  ```
+</Note>

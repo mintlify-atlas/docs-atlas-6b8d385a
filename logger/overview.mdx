@@ -1,0 +1,134 @@
+---
+title: "GoKit Logger: Structured Logging for Go APIs"
+sidebarTitle: "Overview"
+description: "GoKit's logger package provides structured logging with 7 levels, a thread-safe global instance, context helpers, and multiple pluggable output writers."
+---
+
+GoKit's `logger` package is a structured, production-ready logging solution designed for Go APIs built on top of Gin. Every log entry carries a unique ID, a severity level, a message, a timestamp, and an optional bag of typed fields — giving you rich, queryable logs without any boilerplate. A zero-configuration global instance is ready from the moment you import the package, so you can start logging immediately and layer in customisation later.
+
+## Import
+
+```go
+import "github.com/AndresGT/GoKit/logger"
+```
+
+## Core types
+
+The following types form the foundation of the logger package:
+
+```go
+// Level represents a log severity level.
+type Level int
+
+// Fields is a free-form map of key/value pairs attached to a log entry.
+type Fields map[string]interface{}
+
+// Entry is the structured object written by every Writer.
+type Entry struct {
+    ID        uuid.UUID `json:"id"`
+    Level     Level     `json:"level"`
+    Message   string    `json:"message"`
+    Timestamp time.Time `json:"timestamp"`
+    Service   string    `json:"service,omitempty"`
+    TraceID   string    `json:"trace_id,omitempty"`
+    Fields    Fields    `json:"fields,omitempty"`
+}
+
+// Writer is the interface implemented by every output target.
+type Writer interface {
+    Write(entry *Entry) error
+    Close() error
+}
+```
+
+## Log levels
+
+GoKit defines seven severity levels as ordered integer constants. The logger silently drops any entry whose level is below the configured `MinLevel`.
+
+| Constant | Icon | When to use |
+|---|---|---|
+| `DebugLevel` | 🔍 | Detailed technical information useful during development |
+| `InfoLevel` | ℹ | General operational messages — server started, request completed |
+| `WarnLevel` | ⚠ | Something unexpected happened but the application can continue |
+| `ErrorLevel` | ✖ | A recoverable error occurred; investigate but no restart needed |
+| `FatalLevel` | 💀 | An unrecoverable error; logs the message then calls `os.Exit(1)` |
+| `SecurityLevel` | 🔒 | Audit-grade events: login attempts, authorization failures, rate limits |
+| `OffLevel` | — | Disables all output entirely |
+
+## The global logger
+
+The package keeps a thread-safe global `*Logger` instance that is lazily initialised with `InfoLevel` and colored console output the first time it is accessed. You never need to create a logger to get started.
+
+```go
+package main
+
+import "github.com/AndresGT/GoKit/logger"
+
+func main() {
+    logger.Info("Server starting on port %d", 8080)
+    logger.Debug("Config loaded: %+v", cfg)
+    logger.Warn("Cache miss — falling back to database")
+    logger.Error("Failed to connect to Redis: %v", err)
+    logger.Security("Login attempt from unknown IP: %s", ip)
+    logger.Success("Database connection established") // alias for Info
+}
+```
+
+<Note>
+`logger.Fatal` logs the message and immediately calls `os.Exit(1)`. Reserve it for truly unrecoverable startup failures.
+</Note>
+
+## Context helpers
+
+All four helper functions return a **new** `*Logger` that inherits the global logger's writers and minimum level, with the supplied fields merged in. The global logger is never modified.
+
+```go
+// Attach arbitrary key/value pairs
+logger.WithFields(logger.Fields{
+    "user_id": userID,
+    "action":  "login",
+    "ip":      "203.0.113.42",
+}).Info("Authentication succeeded")
+
+// Attach a user UUID under the "user_id" key
+logger.WithUser(userUUID).Info("Profile updated")
+
+// Attach "endpoint" and "ip" fields
+logger.WithRequest("/api/payments", "203.0.113.42").Warn("Suspicious payload size")
+
+// Pull "user_id" and "request_id" from a context.Context
+logger.WithContext(ctx).Info("Processing background job")
+```
+
+<Tip>
+Chain context helpers together when you need multiple fields. Each call returns a new logger, so the original is always untouched.
+
+```go
+logger.WithUser(userID).WithFields(logger.Fields{"plan": "pro"}).Info("Subscription renewed")
+```
+</Tip>
+
+## Enabling and disabling logs
+
+Two convenience functions control the global logger's minimum level at runtime — useful for integration tests or feature-flagged verbose modes.
+
+```go
+logger.DisableLogs() // sets MinLevel to OffLevel — no output at all
+logger.EnableLogs()  // restores MinLevel to InfoLevel
+```
+
+For finer-grained control, call `SetMinLevel` on any `*Logger` instance directly. See the [Configuration](/logger/configuration) page for details.
+
+## What's next
+
+<CardGroup cols={3}>
+  <Card title="Configuration" icon="sliders" href="/logger/configuration">
+    Customise log levels, colors, service names, and initialise the global logger at startup with `InitGlobal`.
+  </Card>
+  <Card title="Writers" icon="pen-to-square" href="/logger/writers">
+    Route log entries to the console, a JSON file, a PostgreSQL database, or your own custom destination.
+  </Card>
+  <Card title="Gin Integration" icon="plug" href="/logger/gin-integration">
+    Add per-request logging middleware, panic recovery, and route-registration helpers to your Gin router.
+  </Card>
+</CardGroup>

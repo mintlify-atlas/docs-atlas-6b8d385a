@@ -1,0 +1,398 @@
+---
+title: "JWT Token Management in GoKit"
+sidebarTitle: "JWT"
+description: "GoKit's jwt package generates and validates HS256-signed access and refresh tokens with configurable expiry, issuer validation, and full token-pair refresh support."
+---
+
+GoKit's `jwt` package provides a complete token lifecycle for Go APIs: generate HS256-signed access tokens and refresh tokens, validate them with strict security checks (signature, expiry, not-before, issuer, and algorithm), and issue new token pairs from a valid refresh token — all with a thread-safe global configuration that you set once at startup.
+
+## Import
+
+```go
+import "github.com/AndresGT/GoKit/security/jwt"
+```
+
+## Configuration
+
+`jwt.Configure` **must be called once before any other function in this package** — typically in `main` or an `init` function. It sets the signing secrets, token durations, issuer string, and signing method globally.
+
+```go
+func Configure(cfg Config)
+```
+
+<Warning>
+  `Configure` **panics** if `Secret` is empty or shorter than 32 characters. This is intentional — a short secret makes HMAC signatures trivially brute-forceable. Use a randomly generated string of at least 32 characters stored in an environment variable or secrets manager.
+</Warning>
+
+### `Config` fields
+
+<ParamField path="Secret" type="string" required>
+  HMAC signing key for access tokens. **Minimum 32 characters.** Panics on `Configure` if missing or too short. Store this in an environment variable — never hard-code it in source.
+</ParamField>
+
+<ParamField path="RefreshSecret" type="string">
+  Separate HMAC signing key for refresh tokens. If omitted, defaults to `Secret`. Using a distinct value means a compromised access token secret does not automatically compromise refresh tokens.
+</ParamField>
+
+<ParamField path="AccessTokenDuration" type="time.Duration" default="24h">
+  How long access tokens remain valid after issuance. Common production values: `15 * time.Minute` to `1 * time.Hour`.
+</ParamField>
+
+<ParamField path="RefreshTokenDuration" type="time.Duration" default="168h (7 days)">
+  How long refresh tokens remain valid. Refresh tokens are long-lived by design; rotate them on every use.
+</ParamField>
+
+<ParamField path="Issuer" type="string" default='"gokit"'>
+  A string embedded in every token as the `iss` claim and validated on every `Validate` / `ValidateRefreshToken` call. Set this to your application or service name.
+</ParamField>
+
+<ParamField path="SigningMethod" type="jwt.SigningMethod" default="jwt.SigningMethodHS256">
+  The JWT signing algorithm. Defaults to `jwt.SigningMethodHS256`. GoKit validates that the algorithm in each incoming token matches this value, preventing algorithm-switching attacks.
+</ParamField>
+
+### Complete configure example
+
+```go
+package main
+
+import (
+    "time"
+
+    "github.com/AndresGT/GoKit/security/jwt"
+)
+
+func main() {
+    jwt.Configure(jwt.Config{
+        Secret:               "your-super-secret-key-min-32-chars!!",
+        RefreshSecret:        "a-different-secret-for-refresh-tokens",
+        AccessTokenDuration:  15 * time.Minute,
+        RefreshTokenDuration: 7 * 24 * time.Hour,
+        Issuer:               "my-api",
+        SigningMethod:        jwt.SigningMethodHS256,
+    })
+
+    // ... start your Gin server
+}
+```
+
+---
+
+## Claims and TokenPair types
+
+Every token GoKit generates embeds these custom claims alongside the standard JWT registered claims:
+
+```go
+type Claims struct {
+    UserID uuid.UUID              `json:"user_id"`
+    Role   string                 `json:"role"`
+    Extra  map[string]interface{} `json:"extra,omitempty"`
+    jwt.RegisteredClaims
+}
+```
+
+`RegisteredClaims` carries `Issuer`, `Subject` (set to `UserID.String()`), `ExpiresAt`, `IssuedAt`, `NotBefore`, and a unique `ID` (JWT ID) per token.
+
+The `TokenPair` type is returned by functions that generate both tokens at once:
+
+```go
+type TokenPair struct {
+    AccessToken  string    `json:"access_token"`
+    RefreshToken string    `json:"refresh_token"`
+    ExpiresAt    time.Time `json:"expires_at"`
+}
+```
+
+`ExpiresAt` reflects the access token's expiry time and is convenient for telling clients when to refresh.
+
+---
+
+## Generating tokens
+
+### `jwt.Generate`
+
+```go
+func Generate(userID uuid.UUID, role string) (string, error)
+```
+
+Generates a signed access token for the given user and role. Returns an error if `Configure` has not been called.
+
+```go
+userID := uuid.New()
+
+token, err := jwt.Generate(userID, "user")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(token) // eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+---
+
+### `jwt.GenerateWithExtra`
+
+```go
+func GenerateWithExtra(userID uuid.UUID, role string, extra map[string]interface{}) (string, error)
+```
+
+Same as `Generate` but embeds additional key-value pairs into the `extra` claim. Use this for non-sensitive metadata like plan tier or email address that downstream services need without a separate lookup.
+
+```go
+token, err := jwt.GenerateWithExtra(userID, "user", map[string]interface{}{
+    "plan":  "premium",
+    "email": "alice@example.com",
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+### `jwt.GeneratePair`
+
+```go
+func GeneratePair(userID uuid.UUID, role string) (*TokenPair, error)
+```
+
+Generates both an access token and a refresh token in one call. Use this on login or registration.
+
+```go
+pair, err := jwt.GeneratePair(userID, "admin")
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(pair.AccessToken)  // short-lived
+fmt.Println(pair.RefreshToken) // long-lived
+fmt.Println(pair.ExpiresAt)    // when the access token expires
+```
+
+---
+
+### `jwt.GenerateRefreshToken`
+
+```go
+func GenerateRefreshToken(userID uuid.UUID, role string) (string, error)
+```
+
+Generates only a refresh token, signed with `RefreshSecret`. Useful when you want to issue a new refresh token independently without regenerating an access token.
+
+---
+
+### `jwt.MustGenerate`
+
+```go
+func MustGenerate(userID uuid.UUID, role string) string
+```
+
+Calls `Generate` and panics if it returns an error. **Only use in tests or `init` functions** where a failure is truly unrecoverable and you want a hard crash instead of error handling.
+
+```go
+// In a test fixture
+token := jwt.MustGenerate(uuid.New(), "admin")
+```
+
+---
+
+## Validating tokens
+
+### `jwt.Validate`
+
+```go
+func Validate(tokenString string) (*Claims, error)
+```
+
+Parses and fully validates an access token. Returns the embedded `*Claims` on success. Any validation failure returns a descriptive error.
+
+**Validation checks performed:**
+
+<Steps>
+  <Step title="Signature verification">
+    Confirms the token was signed with the configured `Secret`. A tampered or forged token fails here.
+  </Step>
+  <Step title="Signing method check">
+    Ensures the `alg` header matches the configured `SigningMethod`. Rejects tokens that specify a different algorithm (prevents algorithm-switching attacks such as `alg: none`).
+  </Step>
+  <Step title="Expiry (ExpiresAt)">
+    Rejects tokens where `exp` is in the past.
+  </Step>
+  <Step title="Not-before (NotBefore)">
+    Rejects tokens where `nbf` is in the future (token not yet active).
+  </Step>
+  <Step title="Issuer">
+    Rejects tokens where the `iss` claim does not match the configured `Issuer` string.
+  </Step>
+</Steps>
+
+```go
+claims, err := jwt.Validate(tokenString)
+if err != nil {
+    // token is invalid, expired, wrong issuer, etc.
+    c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+    return
+}
+
+fmt.Println(claims.UserID)    // uuid.UUID
+fmt.Println(claims.Role)      // "admin"
+fmt.Println(claims.Extra)     // map[string]interface{}
+fmt.Println(claims.ExpiresAt) // *jwt.NumericDate
+```
+
+---
+
+### `jwt.ValidateRefreshToken`
+
+```go
+func ValidateRefreshToken(tokenString string) (*Claims, error)
+```
+
+Identical to `Validate` but uses `RefreshSecret` for signature verification. Call this when processing a refresh request.
+
+---
+
+## Refreshing tokens
+
+### `jwt.Refresh`
+
+```go
+func Refresh(refreshToken string) (*TokenPair, error)
+```
+
+Validates the refresh token and — if valid — generates a brand-new `*TokenPair` (new access token + new refresh token). This is the one-stop function for a `/auth/refresh` endpoint.
+
+**Example refresh endpoint:**
+
+```go
+func RefreshHandler(c *gin.Context) {
+    var body struct {
+        RefreshToken string `json:"refresh_token" binding:"required"`
+    }
+
+    if err := c.ShouldBindJSON(&body); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "refresh_token is required"})
+        return
+    }
+
+    pair, err := jwt.Refresh(body.RefreshToken)
+    if err != nil {
+        // Expired, invalid signature, wrong issuer, etc.
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "access_token":  pair.AccessToken,
+        "refresh_token": pair.RefreshToken,
+        "expires_at":    pair.ExpiresAt,
+    })
+}
+```
+
+---
+
+## Helper functions
+
+### `jwt.IsExpired`
+
+```go
+func IsExpired(tokenString string) bool
+```
+
+Returns `true` if the token is expired (or otherwise invalid), without returning an error. Convenient for quick pre-checks such as short-circuiting expensive operations.
+
+```go
+if jwt.IsExpired(tokenString) {
+    c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
+    return
+}
+```
+
+---
+
+### `jwt.GetUserID`
+
+```go
+func GetUserID(tokenString string) (uuid.UUID, error)
+```
+
+Validates the token and extracts just the `UserID`. A shorthand when you only need the user identifier and don't need the full claims.
+
+```go
+userID, err := jwt.GetUserID(tokenString)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(userID) // e.g. 550e8400-e29b-41d4-a716-446655440000
+```
+
+---
+
+### `jwt.GetClaims`
+
+```go
+func GetClaims(tokenString string) (*Claims, error)
+```
+
+Parses the token's payload and returns the claims **without verifying the signature or any other field**. The underlying implementation uses `jwt.NewParser().ParseUnverified`.
+
+<Warning>
+  `GetClaims` performs **no validation whatsoever** — signature, expiry, issuer, and algorithm are all ignored. Never use it to make authorization or authentication decisions in production code. Its only legitimate use is local debugging or inspecting a token's contents in a development environment.
+</Warning>
+
+```go
+// Debug only — inspect payload without network calls
+claims, err := jwt.GetClaims(someToken)
+if err == nil {
+    fmt.Printf("UserID: %s, Role: %s\n", claims.UserID, claims.Role)
+}
+```
+
+---
+
+## Custom claims
+
+### `jwt.GenerateCustomClaims`
+
+```go
+func GenerateCustomClaims(claims jwt.Claims) (string, error)
+```
+
+For advanced scenarios where you need a fully custom claim structure that doesn't fit the built-in `Claims` type. Pass any value that implements `jwt.Claims` (from `github.com/golang-jwt/jwt/v5`). The token is signed with the configured `Secret` and `SigningMethod`.
+
+```go
+type ServiceClaims struct {
+    ServiceName string `json:"service_name"`
+    Permissions []string `json:"permissions"`
+    jwt.RegisteredClaims
+}
+
+claims := ServiceClaims{
+    ServiceName: "billing-service",
+    Permissions: []string{"invoices:read", "payments:write"},
+    RegisteredClaims: jwt.RegisteredClaims{
+        ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
+        Issuer:    "my-api",
+    },
+}
+
+token, err := jwt.GenerateCustomClaims(claims)
+```
+
+---
+
+## Quick reference
+
+<CardGroup cols={2}>
+  <Card title="Generate" icon="key">
+    `Generate`, `GenerateWithExtra`, `GeneratePair`, `GenerateRefreshToken`, `MustGenerate`
+  </Card>
+  <Card title="Validate" icon="circle-check">
+    `Validate`, `ValidateRefreshToken` — full signature + claims checks
+  </Card>
+  <Card title="Refresh" icon="rotate">
+    `Refresh` — validates refresh token and returns a new `TokenPair`
+  </Card>
+  <Card title="Helpers" icon="wrench">
+    `IsExpired`, `GetUserID`, `GetClaims` (debug only), `GenerateCustomClaims`
+  </Card>
+</CardGroup>

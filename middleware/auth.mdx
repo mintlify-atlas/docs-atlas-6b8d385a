@@ -1,0 +1,245 @@
+---
+title: "JWT Auth Middleware for Gin with GoKit"
+sidebarTitle: "Auth"
+description: "GoKit's Auth middleware validates JWT tokens on every Gin request, supports skip paths, custom token extractors, role-based access control, and custom error handlers."
+---
+
+The Auth middleware protects your Gin routes by validating JWT tokens on every incoming request. It extracts the token from the `Authorization: Bearer` header or a `token` cookie, validates it using GoKit's JWT package, and injects the user's ID, role, and full claims into the Gin context. Unauthorized requests are aborted with a structured JSON error before they ever reach your handlers.
+
+## Import
+
+```go
+import "github.com/AndresGT/GoKit/middleware"
+```
+
+## Overview
+
+When a request arrives, the middleware runs through the following steps:
+
+<Steps>
+  <Step title="Skip check">
+    If the request path matches any entry in `SkipPaths`, the middleware calls `c.Next()` immediately — no token required.
+  </Step>
+  <Step title="Token extraction">
+    The configured `TokenExtractor` reads the token string from the request. By default it checks the `Authorization: Bearer <token>` header first, then falls back to the `token` cookie.
+  </Step>
+  <Step title="JWT validation">
+    The token is validated via `jwt.Validate()`. An invalid or expired token is logged at Security level and results in a 401 response.
+  </Step>
+  <Step title="Claims validation">
+    The middleware checks that the claims contain a non-nil `UserID` and a non-empty `Role`. Missing claims return a 403 response.
+  </Step>
+  <Step title="Context injection">
+    On success, `UserID`, `Role`, and `Claims` are stored in the Gin context for downstream handlers to read.
+  </Step>
+</Steps>
+
+## Usage
+
+```go
+router.Use(middleware.Auth(middleware.AuthConfig{}))
+```
+
+Passing an empty `AuthConfig{}` applies all defaults: `DefaultTokenExtractor`, the global logger, and no skip paths.
+
+## Configuration
+
+<ParamField body="SkipPaths" type="[]string">
+  Paths that bypass authentication entirely. Supports exact matches and wildcard prefixes — any entry ending with `*` skips all paths that start with the prefix before the asterisk.
+
+  ```go
+  SkipPaths: []string{
+      "/api/auth/login",
+      "/api/auth/register",
+      "/api/public/*",  // skips /api/public/anything
+  }
+  ```
+</ParamField>
+
+<ParamField body="TokenExtractor" type="func(*gin.Context) string">
+  A function that receives the Gin context and returns the raw JWT string. Defaults to `DefaultTokenExtractor`. Set this to `HeaderOnlyExtractor` or `CookieOnlyExtractor` for stricter extraction, or provide your own function for custom schemes.
+</ParamField>
+
+<ParamField body="ErrorHandler" type="func(c *gin.Context, err error)">
+  Called when authentication fails. If `nil`, the default handler returns a JSON body with `{"error": "unauthorized"}` (401) or `{"error": "invalid claims"}` (403) and aborts the request.
+</ParamField>
+
+<ParamField body="Logger" type="*logger.Logger">
+  The logger instance used for security and debug events. Falls back to the GoKit global logger when `nil`.
+</ParamField>
+
+## Built-in Token Extractors
+
+GoKit ships three ready-to-use extractors:
+
+<CardGroup cols={3}>
+  <Card title="DefaultTokenExtractor" icon="shuffle">
+    Checks `Authorization: Bearer <token>` first, then falls back to the `token` cookie. Best for APIs that serve both browser and programmatic clients.
+  </Card>
+  <Card title="HeaderOnlyExtractor" icon="key">
+    Reads only from the `Authorization` header. Use this when cookies are never expected (e.g., pure REST APIs consumed by mobile apps).
+  </Card>
+  <Card title="CookieOnlyExtractor" icon="cookie">
+    Reads only from the `token` cookie. Useful for traditional web apps where tokens are set server-side and cookies are the sole transport.
+  </Card>
+</CardGroup>
+
+```go
+// Use header-only extraction
+router.Use(middleware.Auth(middleware.AuthConfig{
+    TokenExtractor: middleware.HeaderOnlyExtractor,
+}))
+```
+
+## Error Types
+
+The middleware uses three sentinel errors. Your custom `ErrorHandler` can use `errors.Is` to distinguish them:
+
+```go
+var (
+    ErrNoToken       = errors.New("auth: token not provided")       // → 401
+    ErrInvalidToken  = errors.New("auth: invalid or expired token") // → 401
+    ErrInvalidClaims = errors.New("auth: invalid claims")           // → 403
+)
+```
+
+| Error | Default Status | Cause |
+|---|---|---|
+| `ErrNoToken` | 401 | No token found in header or cookie |
+| `ErrInvalidToken` | 401 | Token signature invalid or expired |
+| `ErrInvalidClaims` | 403 | `UserID` is nil or `Role` is empty |
+
+## Accessing Token Data in Handlers
+
+After the middleware runs, use these typed helpers to read values from the Gin context:
+
+```go
+func ProfileHandler(c *gin.Context) {
+    userID, ok := middleware.GetUserID(c)   // uuid.UUID
+    role, ok   := middleware.GetUserRole(c) // string
+    claims, ok := middleware.GetClaims(c)   // *jwt.Claims
+    _ = ok
+
+    c.JSON(200, gin.H{
+        "user_id": userID,
+        "role":    role,
+        "expires": claims.ExpiresAt,
+    })
+}
+```
+
+<ParamField body="GetUserID(c *gin.Context)" type="(uuid.UUID, bool)">
+  Returns the authenticated user's UUID and `true`, or a zero-value UUID and `false` if the middleware did not run or was skipped.
+</ParamField>
+
+<ParamField body="GetUserRole(c *gin.Context)" type="(string, bool)">
+  Returns the user's role string from the JWT claims.
+</ParamField>
+
+<ParamField body="GetClaims(c *gin.Context)" type="(*jwt.Claims, bool)">
+  Returns the full `*jwt.Claims` struct, giving access to `UserID`, `Role`, `Extra`, `ExpiresAt`, and any other fields defined in GoKit's JWT package.
+</ParamField>
+
+## Role-Based Access Control
+
+`RequireRole` is a secondary middleware that must be placed **after** `Auth`. It reads the role that `Auth` injected into the context and aborts with 403 if the role is not in the allowed list. Denied attempts are logged at `SecurityLevel`.
+
+```go
+func RequireRole(roles ...string) gin.HandlerFunc
+```
+
+```go
+// Only admins
+admin := router.Group("/admin")
+admin.Use(middleware.Auth(middleware.AuthConfig{}))
+admin.Use(middleware.RequireRole("admin"))
+
+// Admins or moderators
+mod := router.Group("/mod")
+mod.Use(middleware.Auth(middleware.AuthConfig{}))
+mod.Use(middleware.RequireRole("admin", "moderator"))
+```
+
+<Note>
+  If `GetUserRole` returns `false` (Auth was not run or was skipped), `RequireRole` responds with 401 rather than 403. Always chain it after `Auth`.
+</Note>
+
+## Examples
+
+<CodeGroup>
+
+```go Basic — protect all routes
+router := gin.New()
+
+router.Use(middleware.Auth(middleware.AuthConfig{}))
+
+router.GET("/profile", ProfileHandler)
+router.GET("/settings", SettingsHandler)
+```
+
+```go Skip paths with wildcards
+router.Use(middleware.Auth(middleware.AuthConfig{
+    SkipPaths: []string{
+        "/api/auth/login",
+        "/api/auth/register",
+        "/health",
+        "/api/public/*", // skips all /api/public/... paths
+    },
+}))
+```
+
+```go Custom error handler
+router.Use(middleware.Auth(middleware.AuthConfig{
+    ErrorHandler: func(c *gin.Context, err error) {
+        status := 401
+        if errors.Is(err, middleware.ErrInvalidClaims) {
+            status = 403
+        }
+        c.AbortWithStatusJSON(status, gin.H{
+            "ok":      false,
+            "message": err.Error(),
+        })
+    },
+}))
+```
+
+```go Role enforcement with RequireRole
+// Public auth routes
+router.POST("/api/auth/login", loginHandler)
+
+// All authenticated users
+api := router.Group("/api")
+api.Use(middleware.Auth(middleware.AuthConfig{}))
+api.GET("/me", meHandler)
+
+// Admins only
+admin := api.Group("/admin")
+admin.Use(middleware.RequireRole("admin"))
+admin.DELETE("/users/:id", deleteUserHandler)
+
+// Admins or moderators
+modArea := api.Group("/content")
+modArea.Use(middleware.RequireRole("admin", "moderator"))
+modArea.PUT("/posts/:id", updatePostHandler)
+```
+
+```go Reading user data in a handler
+func meHandler(c *gin.Context) {
+    userID, ok := middleware.GetUserID(c)
+    if !ok {
+        c.JSON(401, gin.H{"error": "unauthorized"})
+        return
+    }
+
+    role, _ := middleware.GetUserRole(c)
+    claims, _ := middleware.GetClaims(c)
+
+    c.JSON(200, gin.H{
+        "user_id":    userID,
+        "role":       role,
+        "expires_at": claims.ExpiresAt,
+    })
+}
+```
+
+</CodeGroup>

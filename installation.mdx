@@ -1,0 +1,111 @@
+---
+title: "Install GoKit in Your Go Module"
+sidebarTitle: "Installation"
+description: "Add GoKit to your Go project with go get. Requires Go 1.25+ and imports four packages: logger, security/hash, security/jwt, and middleware."
+---
+
+GoKit is distributed as a standard Go module and requires no code generation, no configuration files, and no build tags. Run a single `go get` command and you are ready to import whichever packages your project needs.
+
+## Prerequisites
+
+- **Go 1.25 or later** — GoKit's `go.mod` declares `go 1.25`. Run `go version` to confirm your toolchain.
+- **An initialised Go module** — your project must already have a `go.mod` file. If it does not, create one first with `go mod init <module-path>`.
+
+## Install
+
+```bash
+go get github.com/AndresGT/GoKit
+```
+
+This command fetches the module and adds it to your `go.mod` and `go.sum`. All transitive dependencies are resolved automatically.
+
+## Importable Packages
+
+GoKit exposes four packages. Import only the ones you need — they are independent of each other.
+
+<CodeGroup>
+
+```go logger
+import "github.com/AndresGT/GoKit/logger"
+```
+
+```go middleware
+import "github.com/AndresGT/GoKit/middleware"
+```
+
+```go security/jwt
+import "github.com/AndresGT/GoKit/security/jwt"
+```
+
+```go security/hash
+import "github.com/AndresGT/GoKit/security/hash"
+```
+
+</CodeGroup>
+
+### Package overview
+
+| Package | What it provides |
+|---------|-----------------|
+| `logger` | Structured leveled logger, console/file/DB writers, Gin middleware, context helpers |
+| `middleware` | Auth (JWT validation + role enforcement), CORS, Recovery, RequestID |
+| `security/jwt` | HS256 access and refresh token pairs, validation, refresh flow |
+| `security/hash` | bcrypt and Argon2id hashing with auto-detection on verify |
+
+## Key Dependencies
+
+GoKit pulls in the following direct dependencies (versions pinned in `go.mod`):
+
+| Dependency | Used by |
+|-----------|---------|
+| `github.com/gin-gonic/gin` | Router integration in `logger` and `middleware` packages |
+| `github.com/golang-jwt/jwt/v5` | JWT signing and parsing in `security/jwt` |
+| `golang.org/x/crypto` | bcrypt and Argon2id implementations in `security/hash` |
+| `github.com/google/uuid` | User ID type in JWT claims and log entries |
+| `github.com/fatih/color` | ANSI color output in the console writer |
+| `gorm.io/gorm` | Database writer in the `logger` package |
+
+<Note>
+  `gorm.io/gorm` is only required if you use `logger.NewDBWriter`. If you only write to the console or a file, GORM is included as a compile-time dependency but you do not need to configure a database connection.
+</Note>
+
+## Example: Importing All Four Packages
+
+Here is a minimal Go file that imports all four GoKit packages together. You would typically split these across separate files in a real project.
+
+```go
+package main
+
+import (
+    "github.com/AndresGT/GoKit/logger"
+    "github.com/AndresGT/GoKit/middleware"
+    "github.com/AndresGT/GoKit/security/hash"
+    "github.com/AndresGT/GoKit/security/jwt"
+)
+
+func main() {
+    // Use logger, middleware, hash, and jwt here.
+    _ = logger.InfoLevel
+    _ = middleware.DefaultCORS
+    _ = hash.AlgBcrypt
+    _ = jwt.Configure
+}
+```
+
+Run `go mod tidy` after adding your imports to remove any unused entries from `go.sum`.
+
+## Verify the Installation
+
+After running `go get`, confirm the module is present in your dependency graph:
+
+```bash
+go list -m github.com/AndresGT/GoKit
+```
+
+You should see output similar to:
+
+```
+github.com/AndresGT/GoKit v0.x.x
+```
+
+Once the module is installed, head to the [Quickstart](/quickstart) to build a working API in under 5 minutes.

@@ -1,0 +1,152 @@
+---
+title: "Panic Recovery Middleware for Gin with GoKit"
+sidebarTitle: "Recovery"
+description: "GoKit's Recovery middleware catches panics in Gin handlers, logs the error with stack trace and request context, and returns a clean HTTP 500 response."
+---
+
+The Recovery middleware wraps every Gin handler in a deferred `recover()` call. If any handler or downstream middleware panics, Recovery intercepts the error, logs it with structured fields including the request context and optional stack trace, and writes a clean JSON `500 Internal Server Error` response — keeping your server alive and your error trail complete.
+
+## Import
+
+```go
+import "github.com/AndresGT/GoKit/middleware"
+```
+
+## Overview
+
+When a panic occurs the middleware:
+
+1. Normalises the panic value to a string (works with `error`, `string`, or any `any` type).
+2. Captures a stack trace via `runtime/debug.Stack()` if `EnableStackTrace` is enabled.
+3. Reads `user_id` and `role` from the Gin context (populated by `Auth` middleware when available).
+4. Logs the full event at `ErrorLevel` with all fields attached.
+5. Calls your `RecoveryHandler` if one is configured, or writes a default JSON 500 response.
+
+## Presets
+
+GoKit provides two one-line presets for the most common environments:
+
+<CardGroup cols={2}>
+  <Card title="DefaultRecovery" icon="code">
+    **Development mode.** Enables stack trace logging and includes the panic detail in the HTTP response body — useful for debugging locally.
+
+    ```go
+    router.Use(middleware.DefaultRecovery())
+    ```
+  </Card>
+  <Card title="ProductionRecovery" icon="shield">
+    **Production mode.** Disables stack trace logging and hides error detail from the HTTP response — clients receive only `{"error": "internal server error"}`.
+
+    ```go
+    router.Use(middleware.ProductionRecovery())
+    ```
+  </Card>
+</CardGroup>
+
+## Manual Configuration
+
+Use `middleware.Recovery(RecoveryConfig{...})` when you need custom behaviour:
+
+```go
+router.Use(middleware.Recovery(middleware.RecoveryConfig{
+    EnableStackTrace: true,
+    ExposeError:      false,
+    RecoveryHandler: func(c *gin.Context, err any) {
+        requestID := middleware.GetRequestID(c)
+        c.AbortWithStatusJSON(500, gin.H{
+            "error":      "internal_server_error",
+            "request_id": requestID,
+        })
+    },
+}))
+```
+
+### RecoveryConfig Fields
+
+<ParamField body="Logger" type="*logger.Logger">
+  The logger instance used to record the panic event. Defaults to the GoKit global logger when `nil`.
+</ParamField>
+
+<ParamField body="RecoveryHandler" type="func(c *gin.Context, err any)">
+  A custom function called after the panic is logged. Use this to write your own response shape. When `nil`, the middleware writes the default JSON response and calls `c.AbortWithStatusJSON`.
+</ParamField>
+
+<ParamField body="EnableStackTrace" type="bool">
+  When `true`, captures the full goroutine stack trace via `debug.Stack()` and attaches it to the log entry as the `stack` field. Default in `DefaultRecovery` is `true`; in `ProductionRecovery` it is `false`.
+</ParamField>
+
+<ParamField body="ExposeError" type="bool">
+  When `true`, the HTTP response body includes a `detail` field with the panic message in addition to the generic `error` field. Only use this in development. Default in `DefaultRecovery` is `true`; in `ProductionRecovery` it is `false`.
+</ParamField>
+
+<ParamField body="StatusCode" type="int">
+  The HTTP status code sent on panic. Defaults to `500` (`http.StatusInternalServerError`).
+</ParamField>
+
+## What Gets Logged
+
+On every panic the middleware logs at `ErrorLevel` with the message `"Panic recovered"` and the following structured fields:
+
+| Field | Source | Always present |
+|---|---|---|
+| `error` | Normalised panic value | ✅ |
+| `method` | `c.Request.Method` | ✅ |
+| `path` | `c.Request.URL.Path` | ✅ |
+| `ip` | `c.ClientIP()` | ✅ |
+| `user_id` | Auth middleware context | Only when authenticated |
+| `role` | Auth middleware context | Only when authenticated |
+| `stack` | `debug.Stack()` | Only when `EnableStackTrace: true` |
+
+## Default HTTP Response
+
+When no `RecoveryHandler` is set, the response body shape depends on `ExposeError`:
+
+```json
+// ExposeError: false (production)
+{ "error": "internal server error" }
+
+// ExposeError: true (development)
+{ "error": "internal server error", "detail": "runtime error: index out of range [3] ..." }
+```
+
+## Custom Recovery Handler Example
+
+Return a structured error that includes the request ID, making it easy for clients to report the exact failing request:
+
+```go
+router.Use(middleware.Recovery(middleware.RecoveryConfig{
+    EnableStackTrace: true,
+    ExposeError:      false,
+    RecoveryHandler: func(c *gin.Context, err any) {
+        requestID := middleware.GetRequestID(c)
+
+        c.AbortWithStatusJSON(500, gin.H{
+            "error":      "internal_server_error",
+            "message":    "An unexpected error occurred. Please try again.",
+            "request_id": requestID,
+        })
+    },
+}))
+```
+
+<Tip>
+  The `err` parameter in `RecoveryHandler` is the raw panic value (`any`). If you need the string representation, use `fmt.Sprintf("%v", err)`.
+</Tip>
+
+## Middleware Ordering
+
+<Note>
+  Recovery should be registered **after** RequestID in your middleware chain. This ensures the request ID is already stored in the Gin context by the time a panic occurs, so your `RecoveryHandler` can include it in the response.
+
+  The recommended global middleware order is:
+
+  ```go
+  router.Use(middleware.DefaultRequestID()) // 1st — assigns the request ID
+  router.Use(logger.GinMiddleware())         // 2nd — logs each request
+  router.Use(middleware.DefaultRecovery())   // 3rd — wraps everything below
+  router.Use(middleware.DefaultCORS())       // 4th — CORS headers
+  router.Use(middleware.Auth(...))           // 5th — authentication
+  ```
+
+  Because `Recovery` is deferred inside each handler call, it effectively wraps all middleware that runs after it in the chain.
+</Note>

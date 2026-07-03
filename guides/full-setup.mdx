@@ -1,0 +1,251 @@
+---
+title: "Build a Complete Gin API with GoKit"
+sidebarTitle: "Full Setup"
+description: "Step-by-step guide to wiring all GoKit modules — JWT, hashing, logger, and all four middlewares — into a production-ready Gin application."
+---
+
+This guide walks you through combining all four GoKit packages — `logger`, `security/hash`, `security/jwt`, and `middleware` — into a single, production-ready Gin application. By the end you will have a server with public routes anyone can call, protected routes that require a valid JWT, and admin-only routes that also enforce role-based access control.
+
+<Steps>
+
+  <Step title="Configure JWT">
+    Call `jwt.Configure` once at startup — before generating or validating any token. The `Secret` must be at least 32 characters; GoKit panics immediately on startup if it is not, so misconfiguration is caught before your server accepts any traffic.
+
+    ```go
+    jwt.Configure(jwt.Config{
+        Secret:              "my-super-secret-key-at-least-32ch!!",
+        AccessTokenDuration: 24 * time.Hour,
+        Issuer:              "my-api",
+    })
+    ```
+
+    `RefreshTokenDuration` defaults to 7 days and `RefreshSecret` defaults to `Secret` — supply them explicitly if you want separate secrets for access and refresh tokens.
+  </Step>
+
+  <Step title="Configure hashing">
+    Call `hash.Configure` to set your preferred algorithm and cost. This step is optional — the defaults (`AlgBcrypt`, cost 10) are production-ready — but calling it explicitly makes your configuration auditable.
+
+    ```go
+    hash.Configure(hash.Config{
+        Algorithm:  hash.AlgBcrypt,
+        BcryptCost: 10,
+    })
+    ```
+
+    To switch to Argon2id later, change `Algorithm` to `hash.AlgArgon2` and add an `Argon2` params block. `hash.Verify` detects the algorithm from the stored hash prefix, so existing bcrypt hashes continue to work after the change.
+  </Step>
+
+  <Step title="Initialize the logger">
+    Call `logger.InitGlobal` once. Subsequent calls are silently ignored (it is guarded by `sync.Once`), so it is safe to call from `main` without worrying about duplicate initialization.
+
+    ```go
+    logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+    })
+    ```
+
+    `ServiceName` is attached to every log entry as a field, which makes it easy to filter logs in aggregation tools when you run multiple services.
+  </Step>
+
+  <Step title="Create the Gin router">
+    Use `gin.New()`, **not** `gin.Default()`. `gin.Default()` registers its own logger and recovery middleware, which would conflict with GoKit's. GoKit provides both through its own middleware functions, giving you structured JSON-compatible logging and recovery that understand the GoKit context keys.
+
+    ```go
+    router := gin.New()
+    ```
+  </Step>
+
+  <Step title="Attach global middlewares in order">
+    Register the four global middlewares in this specific order. Order is critical — see the [Middleware ordering explained](#middleware-ordering-explained) section below for the detailed rationale.
+
+    ```go
+    router.Use(middleware.DefaultRequestID())  // assigns X-Request-ID first
+    router.Use(logger.GinMiddleware())         // logger reads request_id
+    router.Use(middleware.DefaultCORS())       // CORS headers
+    router.Use(middleware.DefaultRecovery())   // recovery wraps everything
+    ```
+
+    | Middleware | Preset | What it does |
+    |---|---|---|
+    | `DefaultRequestID` | Trusts incoming `X-Request-ID`, generates UUID if absent | Injects `request_id` into Gin context and response header |
+    | `GinMiddleware` | — | Creates per-request logger with `request_id`, method, path, IP |
+    | `DefaultCORS` | `AllowOrigins: ["*"]`, all common methods and headers | Adds CORS response headers; handles preflight `OPTIONS` |
+    | `DefaultRecovery` | Stack trace enabled, error detail exposed | Catches panics and returns HTTP 500 |
+
+    <Note>
+      In production, replace `DefaultCORS()` with `middleware.CORS(middleware.ProductionCORSConfig([]string{"https://your-app.com"}))` and replace `DefaultRecovery()` with `middleware.ProductionRecovery()` to hide internal error details from clients.
+    </Note>
+  </Step>
+
+  <Step title="Register public routes">
+    Create a route group and use `logger.RegisterRoutes` to attach handlers. Passing `Protected: false` causes the logger to print the route with a `→` icon at startup so you can immediately see which routes are public.
+
+    ```go
+    public := router.Group("/api")
+    logger.RegisterRoutes(public, []logger.Route{
+        {Method: "POST", Path: "/login",    Handler: loginHandler,    Protected: false},
+        {Method: "POST", Path: "/register", Handler: registerHandler, Protected: false},
+    })
+    ```
+  </Step>
+
+  <Step title="Register protected routes">
+    Create a second group on the same `/api` prefix and attach `middleware.Auth`. Use `SkipPaths` to list routes in the group that should be exempt — this is useful when a single group mixes public and private endpoints.
+
+    ```go
+    private := router.Group("/api")
+    private.Use(middleware.Auth(middleware.AuthConfig{
+        SkipPaths: []string{"/api/login", "/api/register"},
+    }))
+    logger.RegisterRoutes(private, []logger.Route{
+        {Method: "GET", Path: "/me",    Handler: meHandler,      Protected: true},
+        {Method: "GET", Path: "/users", Handler: getUsersHandler, Protected: true},
+    })
+    ```
+
+    Inside any protected handler, retrieve the authenticated user's identity with `middleware.GetUserID(c)` and `middleware.GetUserRole(c)`.
+  </Step>
+
+  <Step title="Register admin-only routes">
+    Chain `middleware.Auth` and `middleware.RequireRole` on the same group. `Auth` validates the JWT and populates context keys; `RequireRole` then reads the role from context and aborts with 403 if it does not match.
+
+    ```go
+    admin := router.Group("/admin")
+    admin.Use(middleware.Auth(middleware.AuthConfig{}))
+    admin.Use(middleware.RequireRole("admin"))
+    logger.RegisterRoutes(admin, []logger.Route{
+        {Method: "DELETE", Path: "/users/:id", Handler: deleteUserHandler, Protected: true},
+    })
+    ```
+
+    `RequireRole` accepts multiple roles: `middleware.RequireRole("admin", "moderator")` allows either.
+  </Step>
+
+  <Step title="Run the server">
+    Log a startup message and call `router.Run`. Because `logger.Fatal` calls `os.Exit(1)`, any fatal error during startup is automatically caught and terminates the process cleanly.
+
+    ```go
+    logger.Info("Server starting on :8080")
+    router.Run(":8080")
+    ```
+  </Step>
+
+</Steps>
+
+## Complete main.go
+
+The listing below combines every step above into a single, runnable file:
+
+```go
+package main
+
+import (
+    "time"
+
+    "github.com/AndresGT/GoKit/logger"
+    "github.com/AndresGT/GoKit/middleware"
+    "github.com/AndresGT/GoKit/security/hash"
+    "github.com/AndresGT/GoKit/security/jwt"
+    "github.com/gin-gonic/gin"
+    "github.com/google/uuid"
+)
+
+func main() {
+    // 1. Configure JWT
+    jwt.Configure(jwt.Config{
+        Secret:              "my-super-secret-key-at-least-32ch!!",
+        AccessTokenDuration: 24 * time.Hour,
+        Issuer:              "my-api",
+    })
+
+    // 2. Configure hash (optional — defaults are production-ready)
+    hash.Configure(hash.Config{
+        Algorithm:  hash.AlgBcrypt,
+        BcryptCost: 10,
+    })
+
+    // 3. Initialize global logger
+    logger.InitGlobal(logger.Config{
+        MinLevel:     logger.InfoLevel,
+        EnableColors: true,
+        ServiceName:  "my-api",
+    })
+
+    // 4. Create router (gin.New, not gin.Default)
+    router := gin.New()
+
+    // 5. Global middlewares — order matters
+    router.Use(middleware.DefaultRequestID())  // assigns X-Request-ID first
+    router.Use(logger.GinMiddleware())         // logger reads request_id
+    router.Use(middleware.DefaultCORS())       // CORS headers
+    router.Use(middleware.DefaultRecovery())   // recovery wraps everything
+
+    // 6. Public routes
+    public := router.Group("/api")
+    logger.RegisterRoutes(public, []logger.Route{
+        {Method: "POST", Path: "/login",    Handler: loginHandler,    Protected: false},
+        {Method: "POST", Path: "/register", Handler: registerHandler, Protected: false},
+    })
+
+    // 7. Protected routes
+    private := router.Group("/api")
+    private.Use(middleware.Auth(middleware.AuthConfig{
+        SkipPaths: []string{"/api/login", "/api/register"},
+    }))
+    logger.RegisterRoutes(private, []logger.Route{
+        {Method: "GET", Path: "/me",    Handler: meHandler,       Protected: true},
+        {Method: "GET", Path: "/users", Handler: getUsersHandler,  Protected: true},
+    })
+
+    // 8. Admin-only routes
+    admin := router.Group("/admin")
+    admin.Use(middleware.Auth(middleware.AuthConfig{}))
+    admin.Use(middleware.RequireRole("admin"))
+    logger.RegisterRoutes(admin, []logger.Route{
+        {Method: "DELETE", Path: "/users/:id", Handler: deleteUserHandler, Protected: true},
+    })
+
+    logger.Info("Server starting on :8080")
+    router.Run(":8080")
+}
+
+func loginHandler(c *gin.Context) {
+    // Validate credentials (omitted for brevity)
+    userID := uuid.New()
+    pair, err := jwt.GeneratePair(userID, "user")
+    if err != nil {
+        logger.LogRequestError(c, "token generation failed: %v", err)
+        c.JSON(500, gin.H{"error": "internal error"})
+        return
+    }
+    c.JSON(200, gin.H{
+        "access_token":  pair.AccessToken,
+        "refresh_token": pair.RefreshToken,
+        "expires_at":    pair.ExpiresAt,
+    })
+}
+
+func meHandler(c *gin.Context) {
+    userID, _ := middleware.GetUserID(c)
+    role, _   := middleware.GetUserRole(c)
+    logger.LogRequestInfo(c, "user %s fetched profile", userID)
+    c.JSON(200, gin.H{"user_id": userID, "role": role})
+}
+
+func registerHandler(c *gin.Context)   {}
+func getUsersHandler(c *gin.Context)   {}
+func deleteUserHandler(c *gin.Context) {}
+```
+
+## Middleware ordering explained
+
+<Note>
+  The order `DefaultRequestID → GinMiddleware → DefaultCORS → DefaultRecovery` is not arbitrary — each middleware depends on the one before it.
+
+  - **RequestID must run first.** It writes `request_id` into the Gin context (`c.Set("request_id", ...)`). Every middleware and handler that comes after it can read this value.
+  - **GinMiddleware must run second.** It builds the per-request logger by reading `request_id` from the context along with the method, path, IP, and user-agent. If RequestID runs after GinMiddleware, the request logger will not have the `request_id` field.
+  - **CORS must run before any handler that may return early.** The CORS middleware sets `Access-Control-Allow-*` headers and short-circuits `OPTIONS` preflight requests. If a handler or auth middleware aborts the request before CORS runs, the browser never receives the required headers and the request fails.
+  - **Recovery must come last among the global middlewares.** It wraps the remainder of the chain in a `defer/recover` block. If it were registered first, panics in the RequestID or GinMiddleware layers would not be caught. Registering it last means it catches panics from all subsequent middleware and every handler.
+</Note>

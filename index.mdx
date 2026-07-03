@@ -1,20 +1,70 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "GoKit: Go Toolkit for Rapid API Development"
+sidebarTitle: "Home"
+description: "GoKit is a Go library for building production-ready Gin APIs faster, with structured logging, JWT security, password hashing, and battle-tested middlewares."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+GoKit is a modular Go toolkit designed to eliminate boilerplate when building APIs with [Gin](https://github.com/gin-gonic/gin). It packages a structured logger with multiple output targets, JWT access/refresh token management, bcrypt and Argon2id password hashing, and a set of production-ready middlewares — all configurable and ready to drop into your project.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add GoKit to your Go module and start using its packages in minutes.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Stand up a secure Gin API with logging, JWT auth, and CORS in under 50 lines.
+  </Card>
+  <Card title="Logger" icon="terminal" href="/logger/overview">
+    Structured logging with console, file, and database writers. Full Gin integration.
+  </Card>
+  <Card title="Security" icon="lock" href="/security/jwt">
+    Generate and validate JWT access and refresh tokens. Hash passwords with bcrypt or Argon2id.
+  </Card>
+  <Card title="Middleware" icon="shield" href="/middleware/auth">
+    Auth, CORS, Recovery, and Request ID middleware with sensible defaults and full configurability.
+  </Card>
+  <Card title="Full Setup Guide" icon="book" href="/guides/full-setup">
+    See all GoKit modules working together in a complete Gin application.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What's included
+
+<CardGroup cols={2}>
+  <Card title="Logger" icon="list" href="/logger/overview">
+    Seven log levels, colored console output, JSON file writing, async database persistence via GORM, and seamless Gin middleware.
+  </Card>
+  <Card title="Hash" icon="key" href="/security/hash">
+    bcrypt (default) and Argon2id password hashing with automatic algorithm detection on verify and rehash detection.
+  </Card>
+  <Card title="JWT" icon="id-badge" href="/security/jwt">
+    HS256-signed access and refresh tokens with configurable expiry, issuer validation, and a full token-pair refresh flow.
+  </Card>
+  <Card title="Auth Middleware" icon="user-shield" href="/middleware/auth">
+    Per-request JWT validation, configurable skip paths, role-based access control, and custom error handlers.
+  </Card>
+  <Card title="CORS Middleware" icon="globe" href="/middleware/cors">
+    Development (`*`) and production (origin allowlist) presets, wildcard subdomain matching, and preflight handling.
+  </Card>
+  <Card title="Recovery Middleware" icon="rotate" href="/middleware/recovery">
+    Panic recovery with stack-trace logging, dev and production presets, and custom recovery handlers.
+  </Card>
+</CardGroup>
+
+## Getting started
+
+<Steps>
+  <Step title="Install GoKit">
+    ```bash
+    go get github.com/AndresGT/GoKit
+    ```
+  </Step>
+  <Step title="Configure JWT and the logger">
+    Call `jwt.Configure` and `logger.InitGlobal` once at application startup before your router is created.
+  </Step>
+  <Step title="Add middlewares to your Gin router">
+    Attach `middleware.DefaultRequestID()`, `logger.GinMiddleware()`, `middleware.DefaultCORS()`, and `middleware.DefaultRecovery()` in order.
+  </Step>
+  <Step title="Protect routes and read token data">
+    Use `middleware.Auth` on protected route groups and `middleware.GetUserID` / `middleware.GetUserRole` inside handlers.
+  </Step>
+</Steps>

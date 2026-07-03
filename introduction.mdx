@@ -1,0 +1,68 @@
+---
+title: "GoKit: Go Toolkit for Rapid Gin API Development"
+sidebarTitle: "Introduction"
+description: "GoKit bundles a structured logger, JWT security, bcrypt/Argon2id hashing, and Gin middlewares into one Go module for building production APIs faster."
+---
+
+GoKit is a Go library that gives you a structured logger, JWT token management, password hashing, and a set of production-ready Gin middlewares — all from a single module. Instead of wiring together half a dozen separate packages from scratch, you import what you need from `github.com/AndresGT/GoKit` and focus on your business logic.
+
+## Packages
+
+GoKit ships four independently importable packages:
+
+| Package | Import path |
+|---------|-------------|
+| `logger` | `github.com/AndresGT/GoKit/logger` |
+| `security/hash` | `github.com/AndresGT/GoKit/security/hash` |
+| `security/jwt` | `github.com/AndresGT/GoKit/security/jwt` |
+| `middleware` | `github.com/AndresGT/GoKit/middleware` |
+
+You can pull in just the packages your project needs — there is no forced coupling between them.
+
+## Key Features
+
+### Logger
+
+A structured, leveled logger with multiple output targets. It provides **7 log levels** (`Debug`, `Info`, `Warn`, `Error`, `Fatal`, `Security`, `Off`) and supports writing to the console with optional ANSI color output, append-only JSON log files, and a GORM-backed database writer that batches inserts asynchronously so your hot path is never blocked.
+
+The logger ships a **Gin middleware** (`logger.GinMiddleware()`) that automatically logs every incoming request with its method, path, status, latency, and client IP. Inside handlers you can retrieve a pre-populated logger from the Gin context with `logger.GetLogger(c)`. Context helpers like `WithUser`, `WithRequest`, and `WithContext` let you attach structured fields — user IDs, request IDs, endpoints — to any log entry without mutating the global instance.
+
+### Hash
+
+Secure password hashing backed by **bcrypt** (the default) and **Argon2id**. The `hash.Verify` function auto-detects the algorithm from the stored hash prefix, which means you can migrate from bcrypt to Argon2id gradually — existing bcrypt hashes continue to verify correctly while new passwords are stored with Argon2id. The package enforces configurable minimum and maximum password lengths, exposes a `NeedsRehash` helper for rolling cost upgrades, and includes a cryptographically secure random token generator for password-reset flows.
+
+### JWT
+
+Access and refresh token pairs signed with **HS256**. A single `jwt.Configure` call at startup wires in your secret key (minimum 32 characters), token durations, and issuer. `jwt.GeneratePair` returns both an access token and a refresh token in one call. Validation enforces signature, expiry, issuer, and `nbf` claims. `jwt.Refresh` validates an incoming refresh token and issues a new pair atomically. All configuration is protected by a read/write mutex and is safe for concurrent use.
+
+### Middleware
+
+Four Gin middlewares that cover the most common production concerns:
+
+- **Auth** — Validates the JWT from the `Authorization: Bearer` header or a `token` cookie, rejects invalid or missing tokens with HTTP 401/403, and injects the parsed `UserID`, `Role`, and full `Claims` into the Gin context for downstream handlers. Supports path-level skip lists and a custom error handler.
+- **CORS** — `DefaultCORS()` opens all origins for local development; `ProductionCORSConfig` accepts an explicit allow-list with subdomain wildcards. Panics at startup if `AllowCredentials` is combined with a wildcard origin, catching the misconfiguration before your server ever serves a request.
+- **Recovery** — Catches panics anywhere in the handler chain and returns a structured HTTP 500 response instead of crashing the process. `DefaultRecovery()` exposes error detail in development; `ProductionRecovery()` hides internal detail from the client while still logging the full stack trace.
+- **RequestID** — Generates or propagates a UUID `X-Request-ID` header on every request, injects it into the Gin context, and echoes it in the response. `DefaultRequestID()` trusts a valid incoming header (useful behind a gateway); `StrictRequestID()` always generates a fresh ID.
+
+## Module Information
+
+- **Module path:** `github.com/AndresGT/GoKit`
+- **Minimum Go version:** 1.25
+- **License:** MIT
+
+## Explore GoKit
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add GoKit to your project with `go get` and learn about each importable package.
+  </Card>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Build a secure Gin API with JWT auth, structured logging, CORS, and panic recovery in under 50 lines.
+  </Card>
+  <Card title="Logger" icon="scroll" href="/logger/overview">
+    Leveled structured logging with console, file, and database writers plus Gin integration.
+  </Card>
+  <Card title="Security" icon="lock" href="/security/jwt">
+    bcrypt and Argon2id password hashing plus HS256 JWT access and refresh tokens.
+  </Card>
+</CardGroup>
