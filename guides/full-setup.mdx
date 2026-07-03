@@ -1,5 +1,5 @@
 ---
-title: "Build a Complete Gin API with GoKit"
+title: "Build a Production-Ready Gin API with GoKit Modules"
 sidebarTitle: "Full Setup"
 description: "Step-by-step guide to wiring all GoKit modules — JWT, hashing, logger, and all four middlewares — into a production-ready Gin application."
 ---
@@ -244,8 +244,8 @@ func deleteUserHandler(c *gin.Context) {}
 <Note>
   The order `DefaultRequestID → GinMiddleware → DefaultCORS → DefaultRecovery` is not arbitrary — each middleware depends on the one before it.
 
-  - **RequestID must run first.** It writes `request_id` into the Gin context (`c.Set("request_id", ...)`). Every middleware and handler that comes after it can read this value.
-  - **GinMiddleware must run second.** It builds the per-request logger by reading `request_id` from the context along with the method, path, IP, and user-agent. If RequestID runs after GinMiddleware, the request logger will not have the `request_id` field.
+  - **RequestID must run first.** It reads the incoming `X-Request-ID` header, validates it (or generates a fresh UUID if absent), stores the value in the Gin context via `c.Set("request_id", ...)`, and writes it to the response header. Every middleware and handler that follows can retrieve it with `middleware.GetRequestID(c)`.
+  - **GinMiddleware must run second.** It builds the per-request logger by reading the `X-Request-ID` incoming request header along with the method, path, IP, and user-agent. Running it after `DefaultRequestID` ensures the two middlewares operate on the same validated request ID — if a client sends no header, `DefaultRequestID` generates one and both middlewares agree on the value for that request.
   - **CORS must run before any handler that may return early.** The CORS middleware sets `Access-Control-Allow-*` headers and short-circuits `OPTIONS` preflight requests. If a handler or auth middleware aborts the request before CORS runs, the browser never receives the required headers and the request fails.
   - **Recovery must come last among the global middlewares.** It wraps the remainder of the chain in a `defer/recover` block. If it were registered first, panics in the RequestID or GinMiddleware layers would not be caught. Registering it last means it catches panics from all subsequent middleware and every handler.
 </Note>

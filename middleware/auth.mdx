@@ -140,6 +140,30 @@ func ProfileHandler(c *gin.Context) {
   Returns the full `*jwt.Claims` struct, giving access to `UserID`, `Role`, `Extra`, `ExpiresAt`, and any other fields defined in GoKit's JWT package.
 </ParamField>
 
+## Context Keys
+
+GoKit stores auth data under typed `contextKey` string constants. The helper functions (`GetUserID`, `GetUserRole`, `GetClaims`) are the recommended way to read these values in production code because they perform a safe type assertion. In tests you may need to seed the context directly using the raw string values:
+
+| Constant | Raw string value | Holds |
+|---|---|---|
+| `ctxUserIDKey` | `"gokit:user_id"` | `uuid.UUID` |
+| `ctxRoleKey` | `"gokit:user_role"` | `string` |
+| `ctxClaimsKey` | `"gokit:claims"` | `*jwt.Claims` |
+
+```go
+// Seeding context in tests (using raw string keys)
+c.Set("gokit:user_id", someUUID)
+c.Set("gokit:user_role", "admin")
+c.Set("gokit:claims", &jwt.Claims{UserID: someUUID, Role: "admin"})
+
+// Reading back via helpers works as normal
+userID, ok := middleware.GetUserID(c)
+```
+
+<Note>
+  The constants `ctxUserIDKey`, `ctxRoleKey`, and `ctxClaimsKey` are unexported. Use the string literals shown above when seeding a `*gin.Context` in unit tests.
+</Note>
+
 ## Role-Based Access Control
 
 `RequireRole` is a secondary middleware that must be placed **after** `Auth`. It reads the role that `Auth` injected into the context and aborts with 403 if the role is not in the allowed list. Denied attempts are logged at `SecurityLevel`.

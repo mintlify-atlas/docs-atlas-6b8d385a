@@ -106,6 +106,25 @@ router.Use(middleware.RequestID(middleware.RequestIDConfig{
   When `true`, creates a new logger with `request_id` pre-attached and stores it in the Gin context under the key `"logger"`. The GoKit logger middleware and `logger.GetLogger(c)` will automatically pick this up so every subsequent log entry for this request includes the request ID.
 </ParamField>
 
+## Built-in Generator and Validator
+
+GoKit exports two default functions used by all presets. You can reference them directly in a `RequestIDConfig` or replace them with your own implementation.
+
+| Function | Signature | Behaviour |
+|---|---|---|
+| `DefaultGenerator` | `func() string` | Returns `uuid.NewString()` — a random RFC 4122 UUID v4. |
+| `DefaultValidator` | `func(id string) bool` | Accepts IDs matching `^[a-zA-Z0-9\-_.]{8,128}$` — 8–128 alphanumeric, hyphen, underscore, or dot characters. |
+
+```go
+// Explicit use of the exported defaults
+router.Use(middleware.RequestID(middleware.RequestIDConfig{
+    Generator:      middleware.DefaultGenerator,
+    Validator:      middleware.DefaultValidator,
+    TrustIncoming:  true,
+    InjectToLogger: true,
+}))
+```
+
 ## Custom Generator Example
 
 Use a custom header name, a prefixed ID format, and a simple length-based validator:

@@ -1,10 +1,10 @@
 ---
-title: "Integrate GoKit Logger with Gin"
+title: "GoKit Gin Integration: Request Logging and Middleware"
 sidebarTitle: "Gin Integration"
-description: "Use GoKit's Gin middleware for automatic per-request logging with request ID, IP, method, path, status, and latency injected into every log entry."
+description: "Use GoKit's Gin middleware for automatic per-request logging with request ID, client IP, HTTP method, path, and level-aware completion entries."
 ---
 
-GoKit's `logger` package ships first-class Gin middleware so that every HTTP request automatically gets a structured log entry with its request ID, client IP, HTTP method, path, status code, and latency — all without writing a single line of logging code in your handlers. A request-scoped `*Logger` is stored in the Gin context and made available through helper functions that any handler can call.
+GoKit's `logger` package ships first-class Gin middleware so that every HTTP request automatically gets a structured log entry with its request ID, client IP, HTTP method, path, and a level-appropriate completion message — all without writing a single line of logging code in your handlers. A request-scoped `*Logger` is stored in the Gin context and made available through helper functions that any handler can call.
 
 ## GinMiddleware
 
@@ -23,7 +23,7 @@ GoKit's `logger` package ships first-class Gin middleware so that every HTTP req
     Calls `c.Set("logger", reqLogger)` so handlers can retrieve it with `logger.GetLogger(c)`.
   </Step>
   <Step title="Logs request completion">
-    After the handler chain returns, emits a log entry at the appropriate level — `Info` for 2xx/3xx, `Warn` for 4xx, `Error` for 5xx — with the final HTTP status and request latency.
+    After the handler chain returns, emits a level-appropriate log entry: `Info` ("Request completed") for 2xx/3xx responses, `Warn` ("Request warning") for 4xx, and `Error` ("Request failed") for 5xx. The contextual fields already attached (`request_id`, `method`, `path`, `ip`, `user_agent`) are included in the completion entry.
   </Step>
 </Steps>
 

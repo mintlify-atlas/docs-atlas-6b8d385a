@@ -1,7 +1,7 @@
 ---
-title: "JWT Token Management in GoKit"
+title: "JWT Authentication and Token Management with GoKit"
 sidebarTitle: "JWT"
-description: "GoKit's jwt package generates and validates HS256-signed access and refresh tokens with configurable expiry, issuer validation, and full token-pair refresh support."
+description: "GoKit's jwt package generates and validates HS256-signed access and refresh tokens with configurable expiry, issuer validation, and refresh support."
 ---
 
 GoKit's `jwt` package provides a complete token lifecycle for Go APIs: generate HS256-signed access tokens and refresh tokens, validate them with strict security checks (signature, expiry, not-before, issuer, and algorithm), and issue new token pairs from a valid refresh token — all with a thread-safe global configuration that you set once at startup.
@@ -302,7 +302,7 @@ Returns `true` if the token is expired (or otherwise invalid), without returning
 
 ```go
 if jwt.IsExpired(tokenString) {
-    c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
+    c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired or invalid"})
     return
 }
 ```

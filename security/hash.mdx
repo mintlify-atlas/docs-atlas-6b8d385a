@@ -1,7 +1,7 @@
 ---
 title: "Password Hashing with bcrypt and Argon2id in GoKit"
 sidebarTitle: "Hashing"
-description: "GoKit's hash package supports bcrypt and Argon2id password hashing with automatic algorithm detection, rehash detection, and secure random token generation."
+description: "GoKit's hash package offers bcrypt and Argon2id password hashing with automatic algorithm detection, rehash detection, and secure random token generation."
 ---
 
 GoKit's `hash` package gives you production-ready password hashing out of the box. It supports both **bcrypt** (the default) and **Argon2id**, validates password length automatically, detects which algorithm was used on verification so you can migrate algorithms gradually, and provides cryptographically secure token generation for flows like password resets and email verification.
@@ -11,6 +11,23 @@ GoKit's `hash` package gives you production-ready password hashing out of the bo
 ```go
 import "github.com/AndresGT/GoKit/security/hash"
 ```
+
+## Algorithm type and constants
+
+The `Algorithm` type selects the hashing algorithm used for new passwords. Two constants are defined:
+
+```go
+type Algorithm string
+
+const (
+    AlgBcrypt Algorithm = "bcrypt"
+    AlgArgon2 Algorithm = "argon2id"
+)
+```
+
+Pass these constants to `Config.Algorithm` when calling `Configure`. The default is `AlgBcrypt`.
+
+---
 
 ## Overview
 
@@ -95,6 +112,10 @@ Returns `true` if a bcrypt hash was produced at a lower cost factor than the one
 
 Returns `true` for hashes with an unknown algorithm format as well.
 
+<Note>
+  `NeedsRehash` always returns `false` for Argon2id hashes — parameter comparison for Argon2 is not yet implemented. If you switch Argon2 parameters and need to detect stale hashes, compare the parameters embedded in the hash string manually.
+</Note>
+
 ```go
 if hash.NeedsRehash(storedHash) {
     newHash, err := hash.Hash(plainPassword)
@@ -120,7 +141,7 @@ token, err := hash.GenerateSecureToken()
 if err != nil {
     log.Fatal(err)
 }
-// token is a 44-character base64url string (32 bytes → ~43 chars + padding)
+// token is a 44-character base64url string (32 bytes encoded with padding)
 // e.g. "dGhpcyBpcyBhIHRlc3Qgc3RyaW5nCg=="
 ```
 

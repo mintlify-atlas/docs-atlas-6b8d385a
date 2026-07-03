@@ -16,6 +16,15 @@ import "github.com/AndresGT/GoKit/middleware"
 
 On every request the middleware reads the incoming `Origin` header and checks it against the configured allowlist. If the origin is allowed it writes the appropriate CORS headers. `OPTIONS` preflight requests are short-circuited and never forwarded to your handlers — allowed origins receive `204 No Content`, blocked ones receive `403 Forbidden`. A `Vary: Origin` header is always added when an explicit origin list is in use, ensuring CDN and browser caches don't serve the wrong CORS headers to different callers.
 
+## Functions
+
+| Function | Returns | Description |
+|---|---|---|
+| `DefaultCORSConfig()` | `CORSConfig` | Returns the permissive development config (all origins, no credentials). |
+| `ProductionCORSConfig(origins []string)` | `CORSConfig` | Returns a secure config for the given origin list with credentials enabled. |
+| `CORS(CORSConfig)` | `gin.HandlerFunc` | Builds a CORS middleware from any `CORSConfig`. |
+| `DefaultCORS()` | `gin.HandlerFunc` | Shorthand for `CORS(DefaultCORSConfig())`. |
+
 ## Development Preset
 
 `DefaultCORS()` allows all origins, all common HTTP methods, all common request headers, and disables credentials. Ideal for local development and open public APIs.
